@@ -137,17 +137,19 @@ export default async function handler(req, res) {
 
     if (updateErr) return res.status(500).json({ error: updateErr.message })
 
-    // If company_name is still blank, look it up from the companies table by zi_company_id
+    // If company_name is still blank after enrichment, resolve it from the companies table
+    // using zi_company_id — this covers contacts enriched via email/name match where
+    // ZI doesn't return companyName in the response
     if (!updated.company_name && updated.zi_company_id) {
       const { data: linkedCo } = await supabase
         .from('companies')
-        .select('name')
+        .select('id, name')
         .eq('zi_company_id', updated.zi_company_id)
         .single()
       if (linkedCo?.name) {
         const { data: fixed } = await supabase
           .from('contacts')
-          .update({ company_name: linkedCo.name })
+          .update({ company_name: linkedCo.name, company_id: linkedCo.id })
           .eq('id', id)
           .select()
           .single()
