@@ -1,8 +1,5 @@
 import { supabase } from '../../../lib/supabase'
 
-// Links contacts that reference this company by ZI company ID, email domain, or name
-// Runs on both new inserts and updates. Does NOT require company_id to be null —
-// it also corrects contacts that have zi_company_id pointing here but company_id is wrong.
 function toDomain(url) {
   if (!url) return ''
   return url.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0].split('?')[0].trim()
@@ -12,10 +9,8 @@ const FREE_DOMAINS = new Set(['gmail.com','yahoo.com','hotmail.com','outlook.com
 async function linkOrphanedContacts(company) {
   if (!company?.id) return
   try {
-    // Build OR filter: match by zi_company_id, email domain, or company_name — all with no company_id yet
     const queries = []
 
-    // 1. Match by ZI company ID on the contact record
     if (company.zi_company_id) {
       const { data: byZi } = await supabase
         .from('contacts')
@@ -25,7 +20,6 @@ async function linkOrphanedContacts(company) {
       if (byZi?.length) queries.push(...byZi.map(r => r.id))
     }
 
-    // 2. Match by company name
     if (company.name) {
       const { data: byName } = await supabase
         .from('contacts')
@@ -35,7 +29,6 @@ async function linkOrphanedContacts(company) {
       if (byName?.length) queries.push(...byName.map(r => r.id))
     }
 
-    // 3. Match by email domain against company website
     if (company.website) {
       const domain = toDomain(company.website)
       if (domain && !FREE_DOMAINS.has(domain)) {
@@ -62,8 +55,6 @@ async function linkOrphanedContacts(company) {
     console.error('linkOrphanedContacts error:', e.message)
   }
 }
-
-
 
 export default async function handler(req, res) {
   if (req.method === 'GET') {
@@ -95,7 +86,10 @@ export default async function handler(req, res) {
 
     if (!name) return res.status(400).json({ error: 'Company name is required' })
 
-    // ── Dedup: check if company already exists by zi_company_id or exact name ──
+    // ── Dedup: ZoomInfo imports only ─────────────────────────────────────
+    // Only dedup on zi_company_id so re-importing the same ZI company merges
+    // cleanly. Name-based dedup removed — manual adds are never blocked.
+    // Use the Duplicates tab to review and merge duplicates.
     let existing = null
     if (zi_company_id) {
       const { data: byZi } = await supabase
@@ -105,15 +99,6 @@ export default async function handler(req, res) {
         .limit(1)
         .single()
       if (byZi) existing = byZi
-    }
-    if (!existing) {
-      const { data: byName } = await supabase
-        .from('companies')
-        .select('*')
-        .ilike('name', name.trim())
-        .limit(1)
-        .single()
-      if (byName) existing = byName
     }
 
     const payload = {
@@ -140,15 +125,12 @@ export default async function handler(req, res) {
     }
 
     if (existing) {
-      // Update existing company with any new/richer data, then return it
       const merged = {}
       for (const [k, v] of Object.entries(payload)) {
-        // Only overwrite if existing field is blank/null and new value is set
         if (v !== null && v !== undefined && v !== '' && !existing[k]) {
           merged[k] = v
         }
       }
-      // Always update zi_company_id and enriched if provided
       if (payload.zi_company_id) merged.zi_company_id = payload.zi_company_id
       if (payload.enriched === true) merged.enriched = true
 
@@ -161,7 +143,6 @@ export default async function handler(req, res) {
         savedCompany = updated
       }
 
-      // Auto-link any contacts with matching company_name but no company_id
       await linkOrphanedContacts(savedCompany)
       return res.status(200).json(savedCompany)
     }
@@ -175,7 +156,6 @@ export default async function handler(req, res) {
 
     if (error) return res.status(500).json({ error: error.message })
 
-    // Auto-link any contacts that reference this company by name
     await linkOrphanedContacts(data)
     return res.status(201).json(data)
   }
