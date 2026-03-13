@@ -24,10 +24,12 @@ export default async function handler(req, res) {
   }
 
   // Build match input — best available signal in priority order
+  // ZI requires personId as a numeric type (not string)
   let matchInput = null
-  if (contact.zi_contact_id || contact.zi_person_id) {
-    // ZI requires personId as a number
-    matchInput = { personId: Number(contact.zi_contact_id || contact.zi_person_id) }
+  const rawPersonId = contact.zi_contact_id || contact.zi_person_id
+  const numericPersonId = rawPersonId ? Number(rawPersonId) : null
+  if (numericPersonId && Number.isFinite(numericPersonId) && numericPersonId > 0) {
+    matchInput = { personId: numericPersonId }
   } else if (contact.email) {
     matchInput = { emailAddress: contact.email }
   } else if (contact.first_name && contact.last_name && contact.company_name) {
@@ -53,11 +55,7 @@ export default async function handler(req, res) {
           type: 'ContactEnrich',
           attributes: {
             matchPersonInput: [matchInput],
-            outputFields: [
-              'id', 'firstName', 'lastName', 'email', 'phone', 'mobilePhone',
-              'jobTitle', 'managementLevel', 'companyName', 'companyId',
-              'city', 'state', 'country',
-            ],
+
           },
         },
       }),
