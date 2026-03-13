@@ -109,7 +109,14 @@ export default async function handler(req, res) {
     if (ziId)              updates.zi_company_id = String(ziId)
     if (r.name)            updates.name          = r.name
     if (r.website)         updates.website       = r.website || r.domain
-    if (r.primaryIndustry)  updates.industry      = r.primaryIndustry
+    if (r.primaryIndustry) {
+      try {
+        const ind = typeof r.primaryIndustry === 'string' && r.primaryIndustry.startsWith('[')
+          ? JSON.parse(r.primaryIndustry)[0]
+          : (Array.isArray(r.primaryIndustry) ? r.primaryIndustry[0] : r.primaryIndustry)
+        updates.industry = ind || r.primaryIndustry
+      } catch { updates.industry = r.primaryIndustry }
+    }
     if (r.employeeCount)   updates.employees     = String(r.employeeCount)
     if (r.revenue)         updates.revenue       = String(r.revenue)
     if (r.city)            updates.city          = r.city
