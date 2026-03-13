@@ -118,7 +118,7 @@ export default async function handler(req, res) {
     if (r.city)            updates.city             = r.city
     if (r.state)           updates.state            = r.state
     if (r.country)         updates.country          = r.country
-    updates.company_name = r.companyName || contact.company_name
+    if (r.companyName)     updates.company_name     = r.companyName
     if (r.companyId)       updates.zi_company_id    = String(r.companyId)
     // legacy format stores company in employmentHistory
     if (!r.companyName && r.employmentHistory?.[0]?.company?.companyName)
@@ -136,6 +136,20 @@ export default async function handler(req, res) {
       .single()
 
     if (updateErr) return res.status(500).json({ error: updateErr.message })
+
+    // If company_name is still blank but we have a zi_company_id, look up the company name
+    if (!updates.company_name && updates.zi_company_id) {
+      const { data: company } = await supabase
+        .from('companies')
+        .select('name')
+        .eq('zi_company_id', updates.zi_company_id)
+        .single()
+      if (company?.name) {
+        await supabase.from('contacts').update({ company_name: company.name }).eq('id', id)
+        updated.company_name = company.name
+      }
+    }
+
     return res.status(200).json(updated)
 
   } catch (err) {
