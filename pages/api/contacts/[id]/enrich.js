@@ -70,7 +70,7 @@ export default async function handler(req, res) {
     const r = entry.data
 
     // company_name: GTM v1 returns it directly as r.companyName.
-    // employmentHistory is a legacy field that no longer exists in the response.
+    // employmentHistory is a legacy field that may not exist.
     const enrichedCompanyName =
       r.companyName ||
       r.employmentHistory?.[0]?.company?.companyName ||
@@ -83,7 +83,7 @@ export default async function handler(req, res) {
           ? String(r.employmentHistory[0].company.companyId)
           : contact.zi_company_id
 
-    // After enrich, try to resolve company_id from the ZI company ID or name
+    // Try to resolve the Supabase company_id from the ZI company ID or name
     let resolvedCompanyId = contact.company_id || null
     if (!resolvedCompanyId && enrichedZiCompanyId) {
       const { data: byZi } = await supabase
