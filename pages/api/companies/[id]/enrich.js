@@ -52,9 +52,8 @@ export default async function handler(req, res) {
           attributes: {
             matchCompanyInput: [matchInput],
             outputFields: [
-              'id', 'name', 'website', 'industry', 'employeeCount', 'revenue',
-              'city', 'state', 'country', 'phone', 'description',
-              'foundedYear', 'ticker',
+              'id', 'name', 'website', 'primaryIndustry', 'employeeCount', 'revenue',
+              'city', 'state', 'country', 'phone',
             ],
           },
         },
@@ -110,7 +109,7 @@ export default async function handler(req, res) {
     if (ziId)              updates.zi_company_id = String(ziId)
     if (r.name)            updates.name          = r.name
     if (r.website)         updates.website       = r.website || r.domain
-    if (r.industry)        updates.industry      = r.industry
+    if (r.primaryIndustry)  updates.industry      = r.primaryIndustry
     if (r.employeeCount)   updates.employees     = String(r.employeeCount)
     if (r.revenue)         updates.revenue       = String(r.revenue)
     if (r.city)            updates.city          = r.city
