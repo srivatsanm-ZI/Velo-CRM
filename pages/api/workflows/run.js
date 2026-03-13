@@ -254,32 +254,27 @@ async function runLookalikeAccountBuilder(workflow, token, lookalikePrefetch = n
         }))
         logs.push(`    Using ${lookalikes.length} pre-fetched lookalikes`)
       } else {
-        // Use ZoomInfo similar companies endpoint
+        // Use ZoomInfo Copilot lookalikes endpoint (correct endpoint)
+        const cleanToken = token.replace(/^Bearer\s+/i, '').trim()
+        const params = new URLSearchParams({ companyId: String(ziId) })
         const simRes = await fetch(
-          `https://api.zoominfo.com/gtm/data/v1/companies/similar`,
+          `https://api.zoominfo.com/gtm/copilot/v1/companies/lookalikes?${params.toString()}`,
           {
-            method: 'POST',
-            headers: { ...headers, 'Content-Type': 'application/vnd.api+json' },
-            body: JSON.stringify({ data: { type: 'companies', attributes: { companyId: String(ziId), pageSize: config.max_lookalikes || 15 } } })
+            method: 'GET',
+            headers: {
+              'Accept': 'application/vnd.api+json',
+              'Authorization': `Bearer ${cleanToken}`,
+            },
           }
         )
 
         if (simRes.ok) {
           const simData = await simRes.json()
-          lookalikes = simData?.data || []
+          lookalikes = (simData?.data || []).slice(0, config.max_lookalikes || 15)
         } else {
-          // Fallback: try GET with path param
-          const altRes = await fetch(
-            `https://api.zoominfo.com/gtm/data/v1/companies/${ziId}/similar?pageSize=${config.max_lookalikes || 15}`,
-            { headers: { ...headers, 'Accept': 'application/vnd.api+json' } }
-          )
-          if (altRes.ok) {
-            const altData = await altRes.json()
-            lookalikes = altData?.data || []
-          } else {
-            logs.push(`    ⚠ Similar companies API unavailable (${simRes.status}) — try enriching ${deal.companies?.name} with a ZI Company ID first`)
-            continue
-          }
+          const errText = await simRes.text()
+          logs.push(`    ⚠ Lookalikes API error (${simRes.status}) for ${deal.companies?.name}: ${errText.slice(0, 100)}`)
+          continue
         }
       }
 
