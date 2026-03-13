@@ -36,10 +36,12 @@ export default async function handler(req, res) {
     }
     const safeLastName = last_name || ''
 
-    // ── 1. Dedup check ────────────────────────────────────────────────────
+    // ── 1. Dedup check (ZoomInfo imports only) ───────────────────────────
+    // Only dedup on ZI IDs — re-importing the same ZI contact merges cleanly.
+    // Email/name dedup intentionally removed so manual adds are never blocked.
+    // Use the Duplicates tab to review and merge duplicates.
     let existing = null
 
-    // Check by zi_contact_id (most reliable)
     if (zi_contact_id) {
       const { data: byZi } = await supabase
         .from('contacts')
@@ -50,7 +52,6 @@ export default async function handler(req, res) {
       if (byZi) existing = byZi
     }
 
-    // Check by zi_person_id
     if (!existing && zi_person_id) {
       const { data: byZp } = await supabase
         .from('contacts')
@@ -59,33 +60,6 @@ export default async function handler(req, res) {
         .limit(1)
         .maybeSingle()
       if (byZp) existing = byZp
-    }
-
-    // Check by email (strong dedup signal)
-    if (!existing && email) {
-      const { data: byEmail } = await supabase
-        .from('contacts')
-        .select('*')
-        .ilike('email', email.trim())
-        .limit(1)
-        .maybeSingle()
-      if (byEmail) existing = byEmail
-    }
-
-    // Check by name + company (fuzzy dedup)
-    if (!existing && first_name && safeLastName && (company_name || company_id)) {
-      let nameQuery = supabase
-        .from('contacts')
-        .select('*')
-        .ilike('first_name', first_name.trim())
-        .ilike('last_name', safeLastName.trim())
-      if (company_id) {
-        nameQuery = nameQuery.eq('company_id', company_id)
-      } else if (company_name) {
-        nameQuery = nameQuery.ilike('company_name', company_name.trim())
-      }
-      const { data: byName } = await nameQuery.limit(1).maybeSingle()
-      if (byName) existing = byName
     }
 
     // ── 2. Auto-link company_id ─────────────────────────────────────────
@@ -148,21 +122,18 @@ export default async function handler(req, res) {
       ...(enriched !== undefined && { enriched }),
       ...(linkedin_url  && { linkedin_url }),
       ...(department    && { department }),
-      // Accept both seniority and management_level (same concept, ZI uses management_level)
       ...(management_level && { seniority: management_level }),
       ...(seniority        && { seniority }),
     }
 
-    // ── 4. If duplicate found: merge new data in, return updated ─────────
+    // ── 4. If ZI duplicate found: merge new data in, return updated ──────
     if (existing) {
       const merged = {}
       for (const [k, v] of Object.entries(payload)) {
-        // Fill in any blanks on the existing record
         if (v !== null && v !== undefined && v !== '' && !existing[k]) {
           merged[k] = v
         }
       }
-      // Always update these if provided
       if (payload.zi_contact_id) merged.zi_contact_id = payload.zi_contact_id
       if (payload.zi_person_id)  merged.zi_person_id  = payload.zi_person_id
       if (payload.company_id)    merged.company_id    = payload.company_id
