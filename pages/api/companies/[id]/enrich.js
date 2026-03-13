@@ -51,7 +51,6 @@ export default async function handler(req, res) {
           type: 'CompanyEnrich',
           attributes: {
             matchCompanyInput: [matchInput],
-            requiredFields: ['id'],
             outputFields: [
               'id', 'name', 'website', 'industry', 'employeeCount', 'revenue',
               'city', 'state', 'country', 'phone', 'description',
