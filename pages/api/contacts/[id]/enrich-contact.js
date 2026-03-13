@@ -66,7 +66,7 @@ export default async function handler(req, res) {
     const rawText = await ziRes.text()
     console.log('[ZI Contact Enrich] status:', ziRes.status)
     console.log('[ZI Contact Enrich] matchInput:', JSON.stringify(matchInput))
-    console.log('[ZI Contact Enrich] response:', rawText.slice(0, 1000))
+    console.log('[ZI Contact Enrich] response:', rawText.slice(0, 2000))
 
     if (!ziRes.ok) {
       return res.status(ziRes.status).json({ error: `ZoomInfo error ${ziRes.status}: ${rawText}` })
@@ -74,58 +74,46 @@ export default async function handler(req, res) {
 
     const ziData = JSON.parse(rawText)
 
-    // Try GTM v1 format first: { data: [ { id, attributes: {}, meta: { matchStatus } } ] }
-    let r = null
-    let ziId = null
+    // ZI GTM v1 response structure (confirmed from logs):
+    // { data: [{ id, type, attributes: { firstName, lastName, email, city, state, country,
+    //   jobTitle, managementLevel, mobilePhone,
+    //   company: { id, name }   <-- company is nested here, NOT companyName/companyId
+    // }, meta: { matchStatus } }] }
+    const item = ziData?.data?.[0]
 
-    const v1Item = ziData?.data?.[0]
-    if (v1Item?.attributes && v1Item?.meta?.matchStatus !== 'NO_MATCH') {
-      r = v1Item.attributes
-      ziId = v1Item.id
-    }
-
-    // Fall back to legacy format: { contact_1: { success, data: { id, ... } } }
-    if (!r) {
-      const legacyKey = Object.keys(ziData).find(k => k.startsWith('contact_'))
-      const entry = legacyKey ? ziData[legacyKey] : null
-      if (entry?.success && entry?.data?.id) {
-        r = entry.data
-        ziId = r.id
-      }
-    }
-
-    if (!r) {
+    if (!item || item.meta?.matchStatus === 'NO_MATCH') {
       return res.status(422).json({
         error: 'No match found in ZoomInfo.',
         debug: JSON.stringify(ziData).slice(0, 300),
       })
     }
 
+    const a = item.attributes  // shorthand
+    const ziId = item.id
+
     const updates = {
-      enriched:    true,
-      enriched_at: new Date().toISOString(),
-      updated_at:  new Date().toISOString(),
+      enriched:     true,
+      enriched_at:  new Date().toISOString(),
+      updated_at:   new Date().toISOString(),
     }
 
-    if (ziId)              updates.zi_contact_id    = String(ziId)
-    if (ziId)              updates.zi_person_id     = String(ziId)
-    if (r.firstName)       updates.first_name       = r.firstName
-    if (r.lastName)        updates.last_name        = r.lastName
-    if (r.email)           updates.email            = r.email
-    if (r.jobTitle)        updates.job_title        = r.jobTitle
-    if (r.phone)           updates.phone            = r.phone
-    if (r.mobilePhone)     updates.mobile_phone     = r.mobilePhone
-    if (r.city)            updates.city             = r.city
-    if (r.state)           updates.state            = r.state
-    if (r.country)         updates.country          = r.country
-    // GTM v1 returns company as r.company.name / r.company.id
-    // Some formats use r.companyName / r.companyId — handle both
-    const companyName = r.company?.name || r.companyName || r.employmentHistory?.[0]?.company?.companyName
-    const companyId   = r.company?.id   || r.companyId   || r.employmentHistory?.[0]?.company?.companyId
-    if (companyName)  updates.company_name  = companyName
-    if (companyId)    updates.zi_company_id = String(companyId)
-    if (r.managementLevel) updates.management_level = Array.isArray(r.managementLevel)
-                             ? r.managementLevel[0] : r.managementLevel
+    if (ziId)                updates.zi_contact_id    = String(ziId)
+    if (ziId)                updates.zi_person_id     = String(ziId)
+    if (a.firstName)         updates.first_name       = a.firstName
+    if (a.lastName)          updates.last_name        = a.lastName
+    if (a.email)             updates.email            = a.email
+    if (a.jobTitle)          updates.job_title        = a.jobTitle
+    if (a.phone)             updates.phone            = a.phone
+    if (a.mobilePhone)       updates.mobile_phone     = a.mobilePhone
+    if (a.city)              updates.city             = a.city
+    if (a.state)             updates.state            = a.state
+    if (a.country)           updates.country          = a.country
+    if (a.managementLevel)   updates.management_level = Array.isArray(a.managementLevel)
+                               ? a.managementLevel[0] : a.managementLevel
+
+    // Company: GTM v1 returns as a.company.name / a.company.id
+    if (a.company?.name)     updates.company_name     = a.company.name
+    if (a.company?.id)       updates.zi_company_id    = String(a.company.id)
 
     const { data: updated, error: updateErr } = await supabase
       .from('contacts')
