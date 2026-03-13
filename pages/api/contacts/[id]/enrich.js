@@ -83,7 +83,7 @@ export default async function handler(req, res) {
         state:         r.state        || contact.state,
         country:       r.country      || contact.country,
         company_name:  r.companyName || r.employmentHistory?.[0]?.company?.companyName || contact.company_name,
-        zi_company_id: r.companyId ? String(r.companyId) : r.employmentHistory?.[0]?.company?.companyId
+        zi_company_id: r.employmentHistory?.[0]?.company?.companyId
                          ? String(r.employmentHistory[0].company.companyId) : contact.zi_company_id,
         seniority:     Array.isArray(r.managementLevel) ? r.managementLevel[0] : r.managementLevel || contact.seniority,
         enriched:      true,
