@@ -10,7 +10,7 @@ export default async function handler(req, res) {
   const { token } = req.body
 
   if (!token) {
-    return res.status(400).json({ error: 'ZoomInfo token is required. Please paste your token in the CRM.' })
+    return res.status(400).json({ error: 'ZoomInfo token is required.' })
   }
 
   const { data: company, error: fetchErr } = await supabase
@@ -23,24 +23,18 @@ export default async function handler(req, res) {
     return res.status(404).json({ error: 'Company not found' })
   }
 
-  try {
-    const matchInput = {}
-    if (company.website) matchInput.companyWebsite = company.website
-    else matchInput.companyName = company.name
+  // Build match input — best available signal in priority order
+  let matchInput = {}
+  if (company.zi_company_id) {
+    matchInput = { companyId: String(company.zi_company_id) }
+  } else if (company.website) {
+    matchInput = { companyWebsite: company.website }
+  } else {
+    matchInput = { companyName: company.name }
+  }
 
-    const requestBody = {
-      data: {
-        type: 'CompanyEnrich',
-        attributes: {
-          matchCompanyInput: [matchInput],
-          outputFields: [
-            'name', 'website', 'industries', 'primaryIndustry', 'employeeCount', 'revenue',
-            'city', 'state', 'country', 'phone', 'description',
-            'foundedYear', 'ticker', 'logo', 'employeeRange', 'revenueRange',
-          ],
-        },
-      },
-    }
+  try {
+    const cleanToken = token.replace(/^Bearer\s+/i, '').trim()
 
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 9000)
@@ -50,50 +44,83 @@ export default async function handler(req, res) {
       headers: {
         'Content-Type': 'application/vnd.api+json',
         'Accept': 'application/vnd.api+json',
-        'Authorization': `Bearer ${token}`,
+        'Authorization': `Bearer ${cleanToken}`,
       },
-      body: JSON.stringify(requestBody),
+      body: JSON.stringify({
+        data: {
+          type: 'CompanyEnrich',
+          attributes: {
+            matchCompanyInput: [matchInput],
+            requiredFields: ['id'],
+            outputFields: [
+              'id', 'name', 'website', 'industry', 'employeeCount', 'revenue',
+              'city', 'state', 'country', 'phone', 'description',
+              'foundedYear', 'ticker',
+            ],
+          },
+        },
+      }),
       signal: controller.signal,
     })
     clearTimeout(timeout)
 
+    const rawText = await ziRes.text()
+    console.log('[ZI Company Enrich] status:', ziRes.status)
+    console.log('[ZI Company Enrich] matchInput:', JSON.stringify(matchInput))
+    console.log('[ZI Company Enrich] response:', rawText.slice(0, 1000))
+
     if (!ziRes.ok) {
-      const err = await ziRes.text()
-      throw new Error(`ZoomInfo API error ${ziRes.status}: ${err}`)
+      throw new Error(`ZoomInfo API error ${ziRes.status}: ${rawText}`)
     }
 
-    const ziData = await ziRes.json()
+    const ziData = JSON.parse(rawText)
 
-    // Response shape: { company_1: { success, data: { id, name, ... } } }
-    const companyKey = Object.keys(ziData).find(k => k.startsWith('company_'))
-    const result = companyKey ? ziData[companyKey]?.data : null
+    // Try GTM v1 format first: { data: [ { id, attributes: {}, meta: { matchStatus } } ] }
+    let r = null
+    let ziId = null
 
-    if (!result || !result.id) {
-      return res.status(422).json({ error: 'ZoomInfo found no match for this company' })
+    const v1Item = ziData?.data?.[0]
+    if (v1Item?.attributes && v1Item?.meta?.matchStatus !== 'NO_MATCH') {
+      r = v1Item.attributes
+      ziId = v1Item.id
     }
 
-    // Parse industry — can be array or string
-    const industryVal = result.primaryIndustry
-      || (Array.isArray(result.industries) ? result.industries[0] : result.industries)
-      || company.industry
+    // Fall back to legacy format: { company_1: { success, data: { id, ... } } }
+    if (!r) {
+      const legacyKey = Object.keys(ziData).find(k => k.startsWith('company_'))
+      const entry = legacyKey ? ziData[legacyKey] : null
+      if (entry?.success && entry?.data?.id) {
+        r = entry.data
+        ziId = r.id
+      }
+    }
+
+    if (!r) {
+      return res.status(422).json({
+        error: 'ZoomInfo found no match for this company.',
+        debug: JSON.stringify(ziData).slice(0, 300),
+      })
+    }
 
     const updates = {
-      zi_company_id: result.id ? String(result.id) : company.zi_company_id,
-      name:          result.name        || company.name,
-      website:       result.website     || company.website,
-      industry:      industryVal,
-      employees:     result.employeeCount ? String(result.employeeCount) : (result.employeeRange || company.employees),
-      revenue:       result.revenue       ? String(result.revenue)       : (result.revenueRange  || company.revenue),
-      city:          result.city          || company.city,
-      state:         result.state         || company.state,
-      country:       result.country       || company.country,
-      phone:         result.phone         || company.phone,
-      description:   result.description   || company.description,
-      logo:          result.logo          || company.logo,
-      enriched:      true,
-      enriched_at:   new Date().toISOString(),
-      updated_at:    new Date().toISOString(),
+      enriched:    true,
+      enriched_at: new Date().toISOString(),
+      updated_at:  new Date().toISOString(),
     }
+
+    if (ziId)              updates.zi_company_id = String(ziId)
+    if (r.name)            updates.name          = r.name
+    if (r.website)         updates.website       = r.website || r.domain
+    if (r.industry)        updates.industry      = r.industry
+    if (r.employeeCount)   updates.employees     = String(r.employeeCount)
+    if (r.revenue)         updates.revenue       = String(r.revenue)
+    if (r.city)            updates.city          = r.city
+    if (r.state)           updates.state         = r.state
+    if (r.country)         updates.country       = r.country
+    if (r.phone)           updates.phone         = r.phone
+    if (r.description)     updates.description   = r.description
+    if (r.foundedYear)     updates.founded       = String(r.foundedYear)
+    if (r.ticker)          updates.ticker        = r.ticker
 
     const { data: updated, error: updateErr } = await supabase
       .from('companies')
