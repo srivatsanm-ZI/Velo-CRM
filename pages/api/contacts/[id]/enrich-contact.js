@@ -118,29 +118,14 @@ export default async function handler(req, res) {
     if (r.city)            updates.city             = r.city
     if (r.state)           updates.state            = r.state
     if (r.country)         updates.country          = r.country
-    if (r.companyName)     updates.company_name     = r.companyName
-    if (r.companyId)       updates.zi_company_id    = String(r.companyId)
-    // legacy format stores company in employmentHistory
-    if (!r.companyName && r.employmentHistory?.[0]?.company?.companyName)
-      updates.company_name = r.employmentHistory[0].company.companyName
-    if (!r.companyId && r.employmentHistory?.[0]?.company?.companyId)
-      updates.zi_company_id = String(r.employmentHistory[0].company.companyId)
+    // GTM v1 returns company as r.company.name / r.company.id
+    // Some formats use r.companyName / r.companyId — handle both
+    const companyName = r.company?.name || r.companyName || r.employmentHistory?.[0]?.company?.companyName
+    const companyId   = r.company?.id   || r.companyId   || r.employmentHistory?.[0]?.company?.companyId
+    if (companyName)  updates.company_name  = companyName
+    if (companyId)    updates.zi_company_id = String(companyId)
     if (r.managementLevel) updates.management_level = Array.isArray(r.managementLevel)
                              ? r.managementLevel[0] : r.managementLevel
-
-    // If ZI didn't return companyName but gave us a companyId,
-    // look up the company in our DB and backfill company_name + company_id
-    if (!updates.company_name && updates.zi_company_id) {
-      const { data: linkedCo } = await supabase
-        .from('companies')
-        .select('id, name')
-        .eq('zi_company_id', updates.zi_company_id)
-        .single()
-      if (linkedCo?.name) {
-        updates.company_name = linkedCo.name
-        updates.company_id   = linkedCo.id
-      }
-    }
 
     const { data: updated, error: updateErr } = await supabase
       .from('contacts')
