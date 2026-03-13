@@ -1,0 +1,23 @@
+{
+  "name": "velo-crm",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "14.2.3",
+    "react": "18.3.0",
+    "react-dom": "18.3.0",
+    "@supabase/supabase-js": "^2.43.4",
+    "papaparse": "^5.4.1"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.3"
+  },
+  "description": "Velo \u2014 Modern GTM CRM powered by ZoomInfo"
+}
