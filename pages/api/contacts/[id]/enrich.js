@@ -137,16 +137,21 @@ export default async function handler(req, res) {
 
     if (updateErr) return res.status(500).json({ error: updateErr.message })
 
-    // If company_name is still blank but we have a zi_company_id, look up the company name
-    if (!updates.company_name && updates.zi_company_id) {
-      const { data: company } = await supabase
+    // If company_name is still blank, look it up from the companies table by zi_company_id
+    if (!updated.company_name && updated.zi_company_id) {
+      const { data: linkedCo } = await supabase
         .from('companies')
         .select('name')
-        .eq('zi_company_id', updates.zi_company_id)
+        .eq('zi_company_id', updated.zi_company_id)
         .single()
-      if (company?.name) {
-        await supabase.from('contacts').update({ company_name: company.name }).eq('id', id)
-        updated.company_name = company.name
+      if (linkedCo?.name) {
+        const { data: fixed } = await supabase
+          .from('contacts')
+          .update({ company_name: linkedCo.name })
+          .eq('id', id)
+          .select()
+          .single()
+        if (fixed) return res.status(200).json(fixed)
       }
     }
 
