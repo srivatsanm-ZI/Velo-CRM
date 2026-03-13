@@ -118,11 +118,10 @@ export default async function handler(req, res) {
     if (r.city)            updates.city             = r.city
     if (r.state)           updates.state            = r.state
     if (r.country)         updates.country          = r.country
-    if (r.companyName)     updates.company_name     = r.companyName
+    updates.company_name = r.companyName || r.company?.name || r.employmentHistory?.[0]?.company?.companyName || null
+    if (updates.company_name === null) delete updates.company_name
     if (r.companyId)       updates.zi_company_id    = String(r.companyId)
-    // legacy format stores company in employmentHistory
-    if (!r.companyName && r.employmentHistory?.[0]?.company?.companyName)
-      updates.company_name = r.employmentHistory[0].company.companyName
+    // company name handled above
     if (!r.companyId && r.employmentHistory?.[0]?.company?.companyId)
       updates.zi_company_id = String(r.employmentHistory[0].company.companyId)
     if (r.managementLevel) updates.management_level = Array.isArray(r.managementLevel)
@@ -136,27 +135,6 @@ export default async function handler(req, res) {
       .single()
 
     if (updateErr) return res.status(500).json({ error: updateErr.message })
-
-    // If company_name is still blank after enrichment, resolve it from the companies table
-    // using zi_company_id — this covers contacts enriched via email/name match where
-    // ZI doesn't return companyName in the response
-    if (!updated.company_name && updated.zi_company_id) {
-      const { data: linkedCo } = await supabase
-        .from('companies')
-        .select('id, name')
-        .eq('zi_company_id', updated.zi_company_id)
-        .single()
-      if (linkedCo?.name) {
-        const { data: fixed } = await supabase
-          .from('contacts')
-          .update({ company_name: linkedCo.name, company_id: linkedCo.id })
-          .eq('id', id)
-          .select()
-          .single()
-        if (fixed) return res.status(200).json(fixed)
-      }
-    }
-
     return res.status(200).json(updated)
 
   } catch (err) {
