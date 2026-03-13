@@ -26,7 +26,8 @@ export default async function handler(req, res) {
   // Build match input — best available signal in priority order
   let matchInput = null
   if (contact.zi_contact_id || contact.zi_person_id) {
-    matchInput = { personId: String(contact.zi_contact_id || contact.zi_person_id) }
+    // ZI requires personId as a number
+    matchInput = { personId: Number(contact.zi_contact_id || contact.zi_person_id) }
   } else if (contact.email) {
     matchInput = { emailAddress: contact.email }
   } else if (contact.first_name && contact.last_name && contact.company_name) {
@@ -52,7 +53,6 @@ export default async function handler(req, res) {
           type: 'ContactEnrich',
           attributes: {
             matchPersonInput: [matchInput],
-            requiredFields: ['id'],
             outputFields: [
               'id', 'firstName', 'lastName', 'email', 'phone', 'mobilePhone',
               'jobTitle', 'managementLevel', 'companyName', 'companyId',
@@ -74,11 +74,14 @@ export default async function handler(req, res) {
 
     const ziData = JSON.parse(rawText)
 
-    // ZI GTM v1 response structure (confirmed from logs):
-    // { data: [{ id, type, attributes: { firstName, lastName, email, city, state, country,
-    //   jobTitle, managementLevel, mobilePhone,
-    //   company: { id, name }   <-- company is nested here, NOT companyName/companyId
-    // }, meta: { matchStatus } }] }
+    // Confirmed GTM v1 response shape from logs:
+    // { data: [{ id: "7277213089", type: "Contact",
+    //     attributes: { firstName, lastName, email, city, state, country,
+    //       jobTitle, managementLevel: [...], mobilePhone,
+    //       company: { id: 344589814, name: "ZoomInfo" }
+    //     },
+    //     meta: { matchStatus: "FULL_MATCH" }
+    // }]}
     const item = ziData?.data?.[0]
 
     if (!item || item.meta?.matchStatus === 'NO_MATCH') {
@@ -88,7 +91,7 @@ export default async function handler(req, res) {
       })
     }
 
-    const a = item.attributes  // shorthand
+    const a = item.attributes
     const ziId = item.id
 
     const updates = {
@@ -97,23 +100,24 @@ export default async function handler(req, res) {
       updated_at:   new Date().toISOString(),
     }
 
-    if (ziId)                updates.zi_contact_id    = String(ziId)
-    if (ziId)                updates.zi_person_id     = String(ziId)
-    if (a.firstName)         updates.first_name       = a.firstName
-    if (a.lastName)          updates.last_name        = a.lastName
-    if (a.email)             updates.email            = a.email
-    if (a.jobTitle)          updates.job_title        = a.jobTitle
-    if (a.phone)             updates.phone            = a.phone
-    if (a.mobilePhone)       updates.mobile_phone     = a.mobilePhone
-    if (a.city)              updates.city             = a.city
-    if (a.state)             updates.state            = a.state
-    if (a.country)           updates.country          = a.country
-    if (a.managementLevel)   updates.management_level = Array.isArray(a.managementLevel)
-                               ? a.managementLevel[0] : a.managementLevel
+    if (ziId)               updates.zi_contact_id    = String(ziId)
+    if (ziId)               updates.zi_person_id     = String(ziId)
+    if (a.firstName)        updates.first_name       = a.firstName
+    if (a.lastName)         updates.last_name        = a.lastName
+    if (a.email)            updates.email            = a.email
+    if (a.jobTitle)         updates.job_title        = a.jobTitle
+    if (a.phone)            updates.phone            = a.phone
+    if (a.mobilePhone)      updates.mobile_phone     = a.mobilePhone
+    if (a.city)             updates.city             = a.city
+    if (a.state)            updates.state            = a.state
+    if (a.country)          updates.country          = a.country
+    if (a.managementLevel)  updates.management_level = Array.isArray(a.managementLevel)
+                              ? a.managementLevel[0] : a.managementLevel
 
-    // Company: GTM v1 returns as a.company.name / a.company.id
-    if (a.company?.name)     updates.company_name     = a.company.name
-    if (a.company?.id)       updates.zi_company_id    = String(a.company.id)
+    // GTM v1 returns company as a nested object: a.company.name / a.company.id
+    // confirmed from logs: "company":{"id":344589814,"name":"ZoomInfo"}
+    if (a.company?.name)    updates.company_name     = a.company.name
+    if (a.company?.id)      updates.zi_company_id    = String(a.company.id)
 
     const { data: updated, error: updateErr } = await supabase
       .from('contacts')
