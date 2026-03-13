@@ -22,7 +22,7 @@ export default async function handler(req, res) {
   // Build match input — best available signal
   let matchInput = null
   if (contact.zi_contact_id || contact.zi_person_id) {
-    matchInput = { contactId: String(contact.zi_contact_id || contact.zi_person_id) }
+    matchInput = { personId: String(contact.zi_contact_id || contact.zi_person_id) }
   } else if (contact.email) {
     matchInput = { emailAddress: contact.email }
   } else if (contact.first_name && contact.last_name && contact.company_name) {
