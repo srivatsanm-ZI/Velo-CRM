@@ -23,27 +23,36 @@ export default async function handler(req, res) {
     return res.status(404).json({ error: 'Contact not found' })
   }
 
-  if (!contact.email && !(contact.first_name && contact.last_name && contact.company_name)) {
-    return res.status(422).json({ error: 'Add an email OR (first name + last name + company) to enrich this contact.' })
+  // Build match input — best available signal in priority order
+  let matchInput = null
+  if (contact.zi_contact_id || contact.zi_person_id) {
+    matchInput = { personId: String(contact.zi_contact_id || contact.zi_person_id) }
+  } else if (contact.email) {
+    matchInput = { emailAddress: contact.email }
+  } else if (contact.first_name && contact.last_name && contact.company_name) {
+    matchInput = { firstName: contact.first_name, lastName: contact.last_name, companyName: contact.company_name }
+  } else if (contact.first_name && contact.last_name) {
+    matchInput = { firstName: contact.first_name, lastName: contact.last_name }
+  } else {
+    return res.status(422).json({ error: 'Contact needs an email or full name to enrich.' })
   }
 
   try {
-    const matchInput = contact.email
-      ? { emailAddress: contact.email }
-      : { firstName: contact.first_name, lastName: contact.last_name, companyName: contact.company_name }
+    const cleanToken = token.replace(/^Bearer\s+/i, '').trim()
 
     const ziRes = await fetch('https://api.zoominfo.com/gtm/data/v1/contacts/enrich', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/vnd.api+json',
         'Accept': 'application/vnd.api+json',
-        'Authorization': `Bearer ${token}`,
+        'Authorization': `Bearer ${cleanToken}`,
       },
       body: JSON.stringify({
         data: {
           type: 'ContactEnrich',
           attributes: {
             matchPersonInput: [matchInput],
+            requiredFields: ['id'],
             outputFields: [
               'id', 'firstName', 'lastName', 'email', 'phone', 'mobilePhone',
               'jobTitle', 'managementLevel', 'companyName', 'companyId',
@@ -54,42 +63,74 @@ export default async function handler(req, res) {
       }),
     })
 
-    const ziData = await ziRes.json()
+    const rawText = await ziRes.text()
+    console.log('[ZI Contact Enrich] status:', ziRes.status)
+    console.log('[ZI Contact Enrich] matchInput:', JSON.stringify(matchInput))
+    console.log('[ZI Contact Enrich] response:', rawText.slice(0, 1000))
 
     if (!ziRes.ok) {
-      return res.status(ziRes.status).json({ error: JSON.stringify(ziData) })
+      return res.status(ziRes.status).json({ error: `ZoomInfo error ${ziRes.status}: ${rawText}` })
     }
 
-    const key = Object.keys(ziData).find(k => k.startsWith('contact_'))
-    const entry = key ? ziData[key] : null
+    const ziData = JSON.parse(rawText)
 
-    if (!entry || !entry.success || !entry.data || !entry.data.id) {
-      return res.status(422).json({ error: entry?.error || 'No match found in ZoomInfo' })
+    // Try GTM v1 format first: { data: [ { id, attributes: {}, meta: { matchStatus } } ] }
+    let r = null
+    let ziId = null
+
+    const v1Item = ziData?.data?.[0]
+    if (v1Item?.attributes && v1Item?.meta?.matchStatus !== 'NO_MATCH') {
+      r = v1Item.attributes
+      ziId = v1Item.id
     }
 
-    const r = entry.data
+    // Fall back to legacy format: { contact_1: { success, data: { id, ... } } }
+    if (!r) {
+      const legacyKey = Object.keys(ziData).find(k => k.startsWith('contact_'))
+      const entry = legacyKey ? ziData[legacyKey] : null
+      if (entry?.success && entry?.data?.id) {
+        r = entry.data
+        ziId = r.id
+      }
+    }
+
+    if (!r) {
+      return res.status(422).json({
+        error: 'No match found in ZoomInfo.',
+        debug: JSON.stringify(ziData).slice(0, 300),
+      })
+    }
+
+    const updates = {
+      enriched:    true,
+      enriched_at: new Date().toISOString(),
+      updated_at:  new Date().toISOString(),
+    }
+
+    if (ziId)              updates.zi_contact_id    = String(ziId)
+    if (ziId)              updates.zi_person_id     = String(ziId)
+    if (r.firstName)       updates.first_name       = r.firstName
+    if (r.lastName)        updates.last_name        = r.lastName
+    if (r.email)           updates.email            = r.email
+    if (r.jobTitle)        updates.job_title        = r.jobTitle
+    if (r.phone)           updates.phone            = r.phone
+    if (r.mobilePhone)     updates.mobile_phone     = r.mobilePhone
+    if (r.city)            updates.city             = r.city
+    if (r.state)           updates.state            = r.state
+    if (r.country)         updates.country          = r.country
+    updates.company_name = r.companyName || contact.company_name
+    if (r.companyId)       updates.zi_company_id    = String(r.companyId)
+    // legacy format stores company in employmentHistory
+    if (!r.companyName && r.employmentHistory?.[0]?.company?.companyName)
+      updates.company_name = r.employmentHistory[0].company.companyName
+    if (!r.companyId && r.employmentHistory?.[0]?.company?.companyId)
+      updates.zi_company_id = String(r.employmentHistory[0].company.companyId)
+    if (r.managementLevel) updates.management_level = Array.isArray(r.managementLevel)
+                             ? r.managementLevel[0] : r.managementLevel
 
     const { data: updated, error: updateErr } = await supabase
       .from('contacts')
-      .update({
-        zi_person_id:  String(r.id),
-        first_name:    r.firstName    || contact.first_name,
-        last_name:     r.lastName     || contact.last_name,
-        email:         r.email        || contact.email,
-        job_title:     r.jobTitle     || r.title || contact.job_title,
-        phone:         r.phone        || contact.phone,
-        mobile_phone:  r.mobilePhone  || contact.mobile_phone,
-        city:          r.city         || contact.city,
-        state:         r.state        || contact.state,
-        country:       r.country      || contact.country,
-        company_name:  r.companyName || r.employmentHistory?.[0]?.company?.companyName || contact.company_name,
-        zi_company_id: r.employmentHistory?.[0]?.company?.companyId
-                         ? String(r.employmentHistory[0].company.companyId) : contact.zi_company_id,
-        seniority:     Array.isArray(r.managementLevel) ? r.managementLevel[0] : r.managementLevel || contact.seniority,
-        enriched:      true,
-        enriched_at:   new Date().toISOString(),
-        updated_at:    new Date().toISOString(),
-      })
+      .update(updates)
       .eq('id', id)
       .select()
       .single()
