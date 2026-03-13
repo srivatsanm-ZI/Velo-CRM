@@ -358,27 +358,26 @@ export default function Home() {
   const enrichContact = async (c) => {
     const token = localStorage.getItem('zi_token')
     if (!token) { setTab('integrations'); showToast('Connect ZoomInfo in Integrations first', 'error'); return }
-    // Always resolve the real Supabase ID from loaded state
     const fresh = contacts.find(x => x.id === c.id)
       || contacts.find(x => x.zi_contact_id && x.zi_contact_id === c.zi_contact_id)
       || contacts.find(x => x.email && x.email === c.email)
     if (!fresh) { showToast('Contact not found — please refresh the page and try again', 'error'); return }
     setEnrichingId(fresh.id)
     const res = await fetch(`/api/contacts/${fresh.id}/enrich`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) })
-    if (res.ok) { fetchContacts(search); showToast(`${fresh.first_name} enriched!`, 'success') } else { const d = await res.json(); showToast(d.error || 'Enrichment failed', 'error') }
+    if (res.ok) {
+      const enriched = await res.json()
+      setContacts(prev => prev.map(x => x.id === fresh.id ? { ...x, ...enriched } : x))
+      await fetchContacts(search)
+      showToast(`${fresh.first_name} enriched!`, 'success')
+    } else { const d = await res.json(); showToast(d.error || 'Enrichment failed', 'error') }
     setEnrichingId(null)
   }
   const enrichCompany = async (co) => {
     const token = localStorage.getItem('zi_token')
     if (!token) { setTab('integrations'); showToast('Connect ZoomInfo in Integrations first', 'error'); return }
-    // Always resolve the real Supabase ID from loaded state
-    const fresh = companies.find(c => c.id === co.id)
-      || companies.find(c => c.zi_company_id && c.zi_company_id === co.zi_company_id)
-      || companies.find(c => c.name && c.name.toLowerCase() === co.name?.toLowerCase())
-    if (!fresh) { showToast('Company not found — please refresh the page and try again', 'error'); return }
-    setEnrichingId(fresh.id)
-    const res = await fetch(`/api/companies/${fresh.id}/enrich`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) })
-    if (res.ok) { fetchCompanies(search); showToast(`${fresh.name} enriched!`, 'success') } else { const d = await res.json(); showToast(d.error || 'Enrichment failed', 'error') }
+    setEnrichingId(co.id)
+    const res = await fetch(`/api/companies/${co.id}/enrich`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) })
+    if (res.ok) { fetchCompanies(search); showToast(`${co.name} enriched!`, 'success') } else { const d = await res.json(); showToast(d.error || 'Enrichment failed', 'error') }
     setEnrichingId(null)
   }
   const bulkEnrich = async () => {
