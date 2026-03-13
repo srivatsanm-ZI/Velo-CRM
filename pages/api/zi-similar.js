@@ -1,82 +1,67 @@
-// Proxy to ZoomInfo find_similar_companies
-// ZI API: POST /gtm/data/v1/companies/search with "similar" filter using a reference companyId
-export default async function handler(req, res) {
-  const { companyId, token, pageSize = 15 } = req.method === 'GET' ? req.query : req.body
+// ZoomInfo Company Lookalikes
+// Endpoint: GET https://api.zoominfo.com/gtm/copilot/v1/companies/lookalikes
+// Docs: https://docs.zoominfo.com/reference/companylookalikesinterface_companylookalikes
 
-  if (!companyId || !token) {
-    return res.status(400).json({ error: 'companyId and token are required' })
+export default async function handler(req, res) {
+  const { companyId, companyName, token, pageSize = 15 } = req.method === 'GET' ? req.query : req.body
+
+  if (!token) {
+    return res.status(400).json({ error: 'token is required' })
+  }
+  if (!companyId && !companyName) {
+    return res.status(400).json({ error: 'companyId or companyName is required' })
   }
 
   try {
-    // ZoomInfo's similar companies endpoint (lookalike)
-    // Try the correct GTM v1 endpoint format
+    const cleanToken = token.replace(/^Bearer\s+/i, '').trim()
+
+    // Build query params — prefer companyId, fall back to companyName
+    const params = new URLSearchParams()
+    if (companyId) params.set('companyId', String(companyId))
+    else           params.set('companyName', String(companyName))
+
     const ziRes = await fetch(
-      `https://api.zoominfo.com/gtm/data/v1/companies/similar`,
+      `https://api.zoominfo.com/gtm/copilot/v1/companies/lookalikes?${params.toString()}`,
       {
-        method: 'POST',
+        method: 'GET',
         headers: {
-          'Content-Type': 'application/vnd.api+json',
           'Accept': 'application/vnd.api+json',
-          'Authorization': `Bearer ${token}`,
+          'Authorization': `Bearer ${cleanToken}`,
         },
-        body: JSON.stringify({
-          data: {
-            type: 'companies',
-            attributes: {
-              companyId: String(companyId),
-              pageSize: Number(pageSize),
-            }
-          }
-        })
       }
     )
 
+    const rawText = await ziRes.text()
+    console.log('[ZI Lookalikes] status:', ziRes.status)
+    console.log('[ZI Lookalikes] params:', params.toString())
+    console.log('[ZI Lookalikes] response:', rawText.slice(0, 800))
+
     if (!ziRes.ok) {
-      // Fallback: use search_companies with the companyId to get its profile,
-      // then search for similar via industry/size
-      const errText = await ziRes.text()
-      console.error('ZI similar API error:', ziRes.status, errText)
-
-      // Try alternate URL format
-      const altRes = await fetch(
-        `https://api.zoominfo.com/gtm/data/v1/companies/${companyId}/similar?pageSize=${pageSize}`,
-        {
-          headers: {
-            'Accept': 'application/vnd.api+json',
-            'Authorization': `Bearer ${token}`,
-          }
-        }
-      )
-
-      if (!altRes.ok) {
-        return res.status(200).json({ companies: [], error: `ZI returned ${ziRes.status}` })
-      }
-
-      const altData = await altRes.json()
-      const companies = (altData?.data || []).map(co => ({
-        companyId: String(co.id || co.companyId || ''),
-        name: co.attributes?.name || co.name || '',
-        score: co.attributes?.score || co.score || null,
-        industry: co.attributes?.industry || co.industry || null,
-        employeeCount: co.attributes?.employeeCount || co.employeeCount || null,
-        country: co.attributes?.country || co.country || null,
-      }))
-      return res.status(200).json({ companies })
+      console.error('[ZI Lookalikes] error:', ziRes.status, rawText)
+      // Return empty list instead of crashing the workflow
+      return res.status(200).json({ companies: [], error: `ZI returned ${ziRes.status}: ${rawText.slice(0, 200)}` })
     }
 
-    const data = await ziRes.json()
-    const companies = (data?.data || []).map(co => ({
-      companyId: String(co.id || co.companyId || ''),
-      name: co.attributes?.name || co.name || '',
-      score: co.attributes?.score || co.score || null,
-      industry: co.attributes?.industry || co.industry || null,
-      employeeCount: co.attributes?.employeeCount || co.employeeCount || null,
-      country: co.attributes?.country || co.country || null,
-    }))
+    const data = JSON.parse(rawText)
+
+    // Response: { data: [ { id, type, attributes: { name, score, rank, industry, revenueRange, employeeRange, country } } ] }
+    const companies = (data?.data || [])
+      .slice(0, Number(pageSize))
+      .map(co => ({
+        companyId:     String(co.id || ''),
+        name:          co.attributes?.name          || '',
+        score:         co.attributes?.score         || null,
+        rank:          co.attributes?.rank          || null,
+        industry:      co.attributes?.industry      || null,
+        employeeRange: co.attributes?.employeeRange || null,
+        revenueRange:  co.attributes?.revenueRange  || null,
+        country:       co.attributes?.country       || null,
+      }))
 
     return res.status(200).json({ companies })
+
   } catch (e) {
-    console.error('zi-similar error:', e)
-    return res.status(500).json({ error: e.message, companies: [] })
+    console.error('[ZI Lookalikes] exception:', e.message)
+    return res.status(200).json({ companies: [], error: e.message })
   }
 }
