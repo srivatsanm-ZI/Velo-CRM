@@ -8,6 +8,7 @@ function TrashIcon()   { return <svg width="13" height="13" fill="none" stroke="
 function CheckIcon()   { return <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> }
 function XIcon()       { return <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> }
 function ClockIcon()   { return <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> }
+function SignalIcon()  { return <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg> }
 function ZapIcon()     { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> }
 function UsersIcon()   { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg> }
 function TrendIcon()   { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg> }
@@ -100,6 +101,29 @@ const WORKFLOW_TEMPLATES = [
       { key: 'employee_min',   label: 'Min company size (employees)',        type: 'number', hint: 'Smallest lookalike to include' },
       { key: 'employee_max',   label: 'Max company size (employees)',        type: 'number', hint: 'Largest lookalike to include' },
       { key: 'schedule',       label: 'Run schedule',                        type: 'select', options: ['manual','weekly','monthly'] },
+    ],
+  },
+  {
+    type: 'signal_sync',
+    label: 'Signal Feed Sync',
+    badge: 'Signals',
+    badgeColor: '#0ea5e9',
+    icon: <SignalIcon />,
+    tagline: 'Auto-refresh ZoomInfo signals for all your CRM accounts',
+    description: 'Runs on a schedule to pull the latest intent scores, news, and scoops from ZoomInfo for every company in your CRM. Results are cached in your database so Signal Feed loads instantly — no API wait time. Set it daily to keep signals fresh without manual refreshing.',
+    signals: [
+      'Intent signals — which accounts are researching right now',
+      'News & funding — latest events at your accounts',
+      'Scoops — leadership changes and expansion signals',
+      'Auto-cached results — Signal Feed loads instantly from cache',
+    ],
+    defaults: {
+      mode: 'both',
+      schedule: 'daily',
+    },
+    fields: [
+      { key: 'mode',     label: 'Which accounts to sync', type: 'select', options: ['prospect — all accounts', 'grow — won deals only', 'both — all accounts'] },
+      { key: 'schedule', label: 'Run schedule',           type: 'select', options: ['manual','daily','weekly'] },
     ],
   },
   {
@@ -448,6 +472,7 @@ const SOURCE_META = {
   'workflow:lookalike_account_builder': { label: 'Lookalike Account Builder', color: '#f59e0b' },
   'workflow:win_expander':              { label: 'Lookalike Account Builder', color: '#f59e0b' },
   'workflow:account_growth_monitor':    { label: 'Account Growth Monitor',    color: '#10b981' },
+  'workflow:signal_sync':               { label: 'Signal Feed Sync',          color: '#0ea5e9' },
   'workflow:expansion_playbook':        { label: 'Account Growth Monitor',    color: '#10b981' },
 }
 
