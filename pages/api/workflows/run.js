@@ -254,27 +254,32 @@ async function runLookalikeAccountBuilder(workflow, token, lookalikePrefetch = n
         }))
         logs.push(`    Using ${lookalikes.length} pre-fetched lookalikes`)
       } else {
-        // Use ZoomInfo Copilot lookalikes endpoint (correct endpoint)
-        const cleanToken = token.replace(/^Bearer\s+/i, '').trim()
-        const params = new URLSearchParams({ companyId: String(ziId) })
+        // Use ZoomInfo similar companies endpoint
         const simRes = await fetch(
-          `https://api.zoominfo.com/gtm/copilot/v1/companies/lookalikes?${params.toString()}`,
+          `https://api.zoominfo.com/gtm/data/v1/companies/similar`,
           {
-            method: 'GET',
-            headers: {
-              'Accept': 'application/vnd.api+json',
-              'Authorization': `Bearer ${cleanToken}`,
-            },
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/vnd.api+json' },
+            body: JSON.stringify({ data: { type: 'companies', attributes: { companyId: String(ziId), pageSize: config.max_lookalikes || 15 } } })
           }
         )
 
         if (simRes.ok) {
           const simData = await simRes.json()
-          lookalikes = (simData?.data || []).slice(0, config.max_lookalikes || 15)
+          lookalikes = simData?.data || []
         } else {
-          const errText = await simRes.text()
-          logs.push(`    ⚠ Lookalikes API error (${simRes.status}) for ${deal.companies?.name}: ${errText.slice(0, 100)}`)
-          continue
+          // Fallback: try GET with path param
+          const altRes = await fetch(
+            `https://api.zoominfo.com/gtm/data/v1/companies/${ziId}/similar?pageSize=${config.max_lookalikes || 15}`,
+            { headers: { ...headers, 'Accept': 'application/vnd.api+json' } }
+          )
+          if (altRes.ok) {
+            const altData = await altRes.json()
+            lookalikes = altData?.data || []
+          } else {
+            logs.push(`    ⚠ Similar companies API unavailable (${simRes.status}) — try enriching ${deal.companies?.name} with a ZI Company ID first`)
+            continue
+          }
         }
       }
 
@@ -555,6 +560,111 @@ async function runAccountGrowthMonitor(workflow, token) {
   return { logs, signals, summary: { scanned: customers.length, signals: signals.length } }
 }
 
+// ── 4. SIGNAL FEED SYNC ─────────────────────────────────────────────────────
+// Pulls intent, news, scoops from ZoomInfo for all CRM companies
+// and caches results in signal_cache table for instant Signal Feed loading
+
+async function runSignalSync(workflow, token) {
+  const logs = []
+  const config = workflow.config || {}
+  const mode = (config.mode || 'both').split(' ')[0] // 'prospect', 'grow', 'both'
+  const headers = ziHeaders(token)
+
+  // Fetch intent topics from workflow config or use defaults
+  const topics = config.topics
+    ? config.topics.split(',').map(t => t.trim()).filter(Boolean)
+    : ['CRM software', 'Sales automation', 'Lead generation', 'Data enrichment']
+
+  logs.push(`Syncing signals for ${mode === 'both' ? 'all' : mode} accounts using topics: ${topics.join(', ')}`)
+
+  // Get companies to sync
+  let companiesQuery = supabase
+    .from('companies')
+    .select('id, name, zi_company_id, website')
+    .not('zi_company_id', 'is', null)
+
+  if (mode === 'grow') {
+    const { data: wonDeals } = await supabase
+      .from('deals').select('company_id').eq('stage', 'closed_won').not('company_id', 'is', null)
+    const wonIds = [...new Set((wonDeals || []).map(d => d.company_id))]
+    if (!wonIds.length) return { logs: ['No closed-won deals found.'], results: [] }
+    companiesQuery = companiesQuery.in('id', wonIds)
+  }
+
+  const { data: companies } = await companiesQuery.limit(50)
+  if (!companies?.length) return { logs: ['No enriched companies found to sync.'], results: [] }
+
+  logs.push(`Found ${companies.length} companies with ZoomInfo IDs to sync`)
+
+  let synced = 0, failed = 0
+  const results = []
+
+  for (const co of companies) {
+    try {
+      // Fetch all three signals in parallel
+      const [intentRes, newsRes, scoopRes] = await Promise.all([
+        fetch('https://api.zoominfo.com/gtm/data/v1/intent/enrich', {
+          method: 'POST', headers,
+          body: JSON.stringify({ data: { type: 'IntentEnrich', attributes: { companyId: String(co.zi_company_id), topics } } })
+        }),
+        fetch('https://api.zoominfo.com/gtm/data/v1/news/enrich', {
+          method: 'POST', headers,
+          body: JSON.stringify({ data: { type: 'NewsEnrich', attributes: { companyId: String(co.zi_company_id) } } })
+        }),
+        fetch('https://api.zoominfo.com/gtm/data/v1/scoops/enrich', {
+          method: 'POST', headers,
+          body: JSON.stringify({ data: { type: 'ScoopEnrich', attributes: { companyId: String(co.zi_company_id) } } })
+        }),
+      ])
+
+      const intentData = intentRes.ok ? await intentRes.json() : null
+      const newsData   = newsRes.ok  ? await newsRes.json()   : null
+      const scoopData  = scoopRes.ok ? await scoopRes.json()  : null
+
+      const intent = intentData?.data?.[0]?.attributes
+      const news   = newsData?.data?.[0]?.attributes
+      const scoop  = scoopData?.data?.[0]?.attributes
+
+      const intentScore  = intent?.score || 0
+      const intentTopics = Array.isArray(intent?.topics) ? intent.topics : []
+      const strength     = intentScore >= 70 ? 'high' : intentScore >= 40 ? 'med' : intentScore >= 20 ? 'low' : news || scoop ? 'low' : 'none'
+
+      // Upsert into signal_cache
+      await supabase.from('signal_cache').upsert({
+        company_id:    co.id,
+        zi_company_id: co.zi_company_id,
+        intent_score:  intentScore,
+        intent_topics: intentTopics,
+        intent_date:   intent?.signalDate || null,
+        news_headline: news?.title || news?.headline || null,
+        news_date:     news?.publishedDate || news?.date || null,
+        scoop_title:   scoop?.scoopTitle || scoop?.title || null,
+        scoop_type:    scoop?.scoopType || null,
+        scoop_date:    scoop?.publishedDate || scoop?.date || null,
+        strength,
+        cached_at:     new Date().toISOString(),
+      }, { onConflict: 'company_id' })
+
+      synced++
+      if (intentScore > 0 || news || scoop) {
+        results.push({
+          company_name: co.name,
+          intent_score: intentScore,
+          strength,
+          signal: strength !== 'none' ? `${co.name}: ${strength} signal (intent ${intentScore})` : null,
+        })
+        logs.push(`  ✓ ${co.name} — intent ${intentScore}${news ? ', news' : ''}${scoop ? ', scoop' : ''}`)
+      }
+    } catch (e) {
+      failed++
+      logs.push(`  ⚠ ${co.name}: ${e.message}`)
+    }
+  }
+
+  logs.push(`✓ Sync complete. ${synced} companies synced, ${failed} failed. ${results.filter(r=>r.strength!=='none').length} with active signals.`)
+  return { logs, results, summary: { synced, failed, with_signals: results.filter(r=>r.strength!=='none').length } }
+}
+
 // ── Main Handler ──────────────────────────────────────────────────────────
 export default async function handler(req, res) {
   if (req.method !== 'POST') { res.setHeader('Allow', ['POST']); return res.status(405).end() }
@@ -581,6 +691,8 @@ export default async function handler(req, res) {
       result = await runFundedLeaderFastTrack(workflow, token)
     } else if (workflow.type === 'win_expander' || workflow.type === 'lookalike_account_builder') {
       result = await runLookalikeAccountBuilder(workflow, token, lookalikePrefetch || null)
+    } else if (workflow.type === 'signal_sync') {
+      result = await runSignalSync(workflow, token)
     } else {
       throw new Error(`Unknown workflow type: ${workflow.type}`)
     }
