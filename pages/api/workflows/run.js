@@ -567,31 +567,81 @@ async function runAccountGrowthMonitor(workflow, token) {
 async function runSignalSync(workflow, token) {
   const logs = []
   const config = workflow.config || {}
-  const mode = (config.mode || 'both').split(' ')[0] // 'prospect', 'grow', 'both'
+  const mode = (config.mode || 'all').split(' ')[0] // 'all', 'prospect', 'pipeline', 'grow'
   const headers = ziHeaders(token)
 
-  // Fetch intent topics from workflow config or use defaults
+  // Intent topics — required, must be configured in workflow
   const topics = config.topics
     ? config.topics.split(',').map(t => t.trim()).filter(Boolean)
-    : ['CRM software', 'Sales automation', 'Lead generation', 'Data enrichment']
+    : []
 
-  logs.push(`Syncing signals for ${mode === 'both' ? 'all' : mode} accounts using topics: ${topics.join(', ')}`)
+  if (!topics.length) {
+    return { logs: ['⚠ No intent topics configured. Edit this workflow and add topics first.'], results: [] }
+  }
 
-  // Get companies to sync
+  logs.push(`Mode: ${mode} accounts`)
+  logs.push(`Topics: ${topics.join(', ')}`)
+  if (config.industry_filter) logs.push(`Industry filter: ${config.industry_filter}`)
+  if (config.country_filter)  logs.push(`Country filter: ${config.country_filter}`)
+  if (config.employee_min)    logs.push(`Min employees: ${config.employee_min}`)
+  if (config.employee_max)    logs.push(`Max employees: ${config.employee_max}`)
+
+  // Build company query based on mode
   let companiesQuery = supabase
     .from('companies')
-    .select('id, name, zi_company_id, website')
+    .select('id, name, zi_company_id, website, industry, employees, country')
     .not('zi_company_id', 'is', null)
 
   if (mode === 'grow') {
+    // Only closed-won accounts
     const { data: wonDeals } = await supabase
       .from('deals').select('company_id').eq('stage', 'closed_won').not('company_id', 'is', null)
     const wonIds = [...new Set((wonDeals || []).map(d => d.company_id))]
     if (!wonIds.length) return { logs: ['No closed-won deals found.'], results: [] }
     companiesQuery = companiesQuery.in('id', wonIds)
+
+  } else if (mode === 'pipeline') {
+    // Only companies with open deals
+    const { data: openDeals } = await supabase
+      .from('deals').select('company_id')
+      .not('stage', 'in', '("closed_won","closed_lost")')
+      .not('company_id', 'is', null)
+    const openIds = [...new Set((openDeals || []).map(d => d.company_id))]
+    if (!openIds.length) return { logs: ['No open pipeline deals found.'], results: [] }
+    companiesQuery = companiesQuery.in('id', openIds)
+
+  } else if (mode === 'prospect') {
+    // Companies with NO active deal
+    const { data: allDeals } = await supabase
+      .from('deals').select('company_id').not('company_id', 'is', null)
+    const dealCompanyIds = [...new Set((allDeals || []).map(d => d.company_id))]
+    if (dealCompanyIds.length) {
+      companiesQuery = companiesQuery.not('id', 'in', `(${dealCompanyIds.map(id => `"${id}"`).join(',')})`)
+    }
+  }
+  // mode === 'all' — no extra filter needed
+
+  // Apply optional criteria filters
+  if (config.industry_filter) {
+    companiesQuery = companiesQuery.ilike('industry', `%${config.industry_filter}%`)
+  }
+  if (config.country_filter) {
+    companiesQuery = companiesQuery.ilike('country', `%${config.country_filter}%`)
   }
 
-  const { data: companies } = await companiesQuery.limit(50)
+  let { data: companies } = await companiesQuery.limit(50)
+
+  // Apply employee range filter in JS (stored as text)
+  if (companies && (config.employee_min || config.employee_max)) {
+    companies = companies.filter(co => {
+      if (!co.employees) return true
+      const emp = parseInt(co.employees.replace(/[^0-9]/g, ''))
+      if (isNaN(emp)) return true
+      if (config.employee_min && emp < Number(config.employee_min)) return false
+      if (config.employee_max && emp > Number(config.employee_max)) return false
+      return true
+    })
+  }
   if (!companies?.length) return { logs: ['No enriched companies found to sync.'], results: [] }
 
   logs.push(`Found ${companies.length} companies with ZoomInfo IDs to sync`)
