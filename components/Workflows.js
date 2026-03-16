@@ -121,7 +121,7 @@ const WORKFLOW_TEMPLATES = [
       mode: 'both',
       schedule: 'daily',
     },
-    fields: [
+    configFields: [
       { key: 'mode',     label: 'Which accounts to sync', type: 'select', options: ['prospect — all accounts', 'grow — won deals only', 'both — all accounts'] },
       { key: 'schedule', label: 'Run schedule',           type: 'select', options: ['manual','daily','weekly'] },
     ],
