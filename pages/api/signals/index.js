@@ -159,20 +159,46 @@ export default async function handler(req, res) {
       .in('company_id', companyIds)
       .order('created_at', { ascending: false })
 
-    const { data: activities } = await supabase
-      .from('activities')
-      .select('company_id, logged_at, created_at')
+    // Genuine outbound touches only:
+    // 1. Emails sent via CRM (direction = sent)
+    // 2. Calls logged by rep (type = call)
+    // 3. Meetings logged by rep (type = meeting)
+    // Excluded: notes (internal), enrichment, deal updates, imports
+
+    const { data: sentEmails } = await supabase
+      .from('emails')
+      .select('company_id, received_at, created_at')
       .in('company_id', companyIds)
+      .eq('direction', 'sent')
+      .order('received_at', { ascending: false })
+
+    const { data: callMeetings } = await supabase
+      .from('activities')
+      .select('company_id, type, logged_at, created_at')
+      .in('company_id', companyIds)
+      .in('type', ['call', 'meeting'])
       .order('logged_at', { ascending: false })
 
     const dealMap = {}
     const activityMap = {}
+
     for (const d of (allDeals || [])) {
       if (!dealMap[d.company_id]) dealMap[d.company_id] = []
       dealMap[d.company_id].push(d)
     }
-    for (const a of (activities || [])) {
-      if (!activityMap[a.company_id]) activityMap[a.company_id] = a.logged_at || a.created_at
+
+    // Most recent genuine outbound touch per company
+    for (const e of (sentEmails || [])) {
+      const date = e.received_at || e.created_at
+      if (!activityMap[e.company_id] || date > activityMap[e.company_id]) {
+        activityMap[e.company_id] = date
+      }
+    }
+    for (const a of (callMeetings || [])) {
+      const date = a.logged_at || a.created_at
+      if (!activityMap[a.company_id] || date > activityMap[a.company_id]) {
+        activityMap[a.company_id] = date
+      }
     }
 
     const headers = ziHeaders(token)
@@ -199,8 +225,9 @@ export default async function handler(req, res) {
       const wonDeal  = deals.find(d => d.stage === 'closed_won')
       const lostDeal = deals.find(d => d.stage === 'closed_lost')
 
-      const lastTouch = activityMap[co.id] || co.updated_at || co.created_at
-      const lastTouchDays = daysSince(lastTouch) || 0
+      // Only use genuine human touch — no fallback to updated_at (enrichment updates that)
+      const lastTouch = activityMap[co.id] || null
+      const lastTouchDays = lastTouch ? (daysSince(lastTouch) || 0) : null
 
       // Signal age
       const signalDates = [intent?.signalDate, news?.date, scoop?.date]
@@ -251,8 +278,8 @@ export default async function handler(req, res) {
         sigLabels,
         sigAge,
         sigAgeLabel: sigAge !== null ? (sigAge === 0 ? 'Today' : sigAge === 1 ? 'Yesterday' : `${sigAge}d ago`) : '—',
-        lt: lastTouchDays,
-        ltLabel: ltLabel(lastTouchDays),
+        lt: lastTouchDays ?? 9999,
+        ltLabel: lastTouch ? ltLabel(lastTouchDays) : 'Never',
         deal: dealLabel,
         dealColor,
         intent: intent ? `Score ${intent.score} · ${Array.isArray(intent.topics) ? intent.topics.slice(0,2).join(', ') : intent.topics || '—'}` : '—',
