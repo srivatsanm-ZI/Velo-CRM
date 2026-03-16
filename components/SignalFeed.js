@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import React, { useState, useCallback } from 'react'
 import { Spinner } from './UI'
 
 function SignalIcon()   { return <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg> }
@@ -131,13 +131,22 @@ export default function SignalFeed({ showToast, onViewCompany, onViewContacts, o
     if (!token) { showToast('Set your ZoomInfo token in Integrations first','error'); return }
     setLoading(true); setExpanded(null)
     try {
-      const res  = await fetch('/api/signals', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ token, mode:m, topics:t }) })
+      const res  = await fetch('/api/signals', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ token, mode:m||'all', topics:t||[] }) })
       const data = await res.json()
       if (!res.ok) { showToast(data.error||'Failed to load signals','error'); return }
       setAccounts(data.accounts||[]); setLastRef(new Date())
     } catch { showToast('Network error loading signals','error') }
     finally { setLoading(false) }
   }, [showToast])
+
+  // Auto-load from cache on mount if workflow has already run
+  const loadedRef = React.useRef(false)
+  React.useEffect(() => {
+    if (!loadedRef.current) {
+      loadedRef.current = true
+      load(mode || 'all', topics)
+    }
+  }, [])
 
   function saveTopics(t) {
     try{ localStorage.setItem('sf_topics', JSON.stringify(t)) }catch{}
@@ -166,8 +175,8 @@ export default function SignalFeed({ showToast, onViewCompany, onViewContacts, o
   const riskC  = accounts.filter(a=>a.sigs.includes('risk')).length
   const isGrow = mode==='grow'
 
-  // ── Mode picker ──────────────────────────────────────────────────────
-  if (!mode) return (
+  // ── Mode picker — only show if no accounts loaded from cache ──────────
+  if (!mode && !accounts.length && !loading) return (
     <div style={{ fontFamily:'"IBM Plex Sans",sans-serif' }}>
       {showTopics && <TopicModal initial={topics} onSave={saveTopics} onClose={()=>setShowTopics(false)}/>}
       <div style={{ marginBottom:20 }}>
@@ -306,8 +315,14 @@ export default function SignalFeed({ showToast, onViewCompany, onViewContacts, o
             {topics.length ? 'Click Refresh to pull live ZoomInfo signals for your accounts.' : 'Configure your intent topics first, then load signals.'}
           </div>
           {!topics.length
-            ? <button onClick={()=>setShowTopics(true)} className="btn-primary" style={btnPrimary}><GearIcon/> Configure Topics</button>
-            : <button onClick={()=>load(mode,topics)} className="btn-primary" style={btnPrimary}><RefreshIcon/> Load Signals</button>
+            ? <div>
+                <div style={{ fontSize:12, color:'#94a3b8', marginBottom:12 }}>Run the <strong>Signal Feed Sync</strong> workflow first to auto-populate signals, or configure topics to load manually.</div>
+                <div style={{ display:'flex', gap:8, justifyContent:'center' }}>
+                  <button onClick={()=>setShowTopics(true)} className="btn-ghost action-btn" style={btnGhost}><GearIcon/> Configure Topics</button>
+                  <button onClick={()=>load(mode||'all',topics)} className="btn-primary" style={btnPrimary}><RefreshIcon/> Load from Cache</button>
+                </div>
+              </div>
+            : <button onClick={()=>load(mode||'all',topics)} className="btn-primary" style={btnPrimary}><RefreshIcon/> Load Signals</button>
           }
         </div>
       )}
