@@ -10,6 +10,7 @@ import Pipeline from '../components/Pipeline'
 import TAM from '../components/TAM'
 import ICPSearch from '../components/ICPSearch'
 import Workflows from '../components/Workflows'
+import SignalFeed from '../components/SignalFeed'
 import Duplicates from '../components/Duplicates'
 
 function fmtDate(iso) {
@@ -42,6 +43,7 @@ const NAV = [
   { key: 'companies',    label: 'Companies',     icon: <BuildingIcon />,   section: 'crm' },
   { key: 'pipeline',     label: 'Pipeline',      icon: <PipelineIcon />,   section: 'crm' },
   { key: 'workflows',    label: 'Workflows',     icon: <WorkflowIcon />,   section: 'gtm' },
+  { key: 'signals',      label: 'Signal Feed',   icon: <BoltIcon />,       section: 'gtm' },
   { key: 'tam',          label: 'ICP Profiles',  icon: <TargetIcon />,     section: 'gtm' },
   { key: 'icp',          label: 'ICP Search',    icon: <SearchNavIcon />,  section: 'gtm' },
   { key: 'duplicates',   label: 'Duplicates',    icon: <DuplicatesIcon />, section: 'tools' },
@@ -358,18 +360,9 @@ export default function Home() {
   const enrichContact = async (c) => {
     const token = localStorage.getItem('zi_token')
     if (!token) { setTab('integrations'); showToast('Connect ZoomInfo in Integrations first', 'error'); return }
-    const fresh = contacts.find(x => x.id === c.id)
-      || contacts.find(x => x.zi_contact_id && x.zi_contact_id === c.zi_contact_id)
-      || contacts.find(x => x.email && x.email === c.email)
-    if (!fresh) { showToast('Contact not found — please refresh the page and try again', 'error'); return }
-    setEnrichingId(fresh.id)
-    const res = await fetch(`/api/contacts/${fresh.id}/enrich`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) })
-    if (res.ok) {
-      const enriched = await res.json()
-      setContacts(prev => prev.map(x => x.id === fresh.id ? { ...x, ...enriched } : x))
-      await fetchContacts(search)
-      showToast(`${fresh.first_name} enriched!`, 'success')
-    } else { const d = await res.json(); showToast(d.error || 'Enrichment failed', 'error') }
+    setEnrichingId(c.id)
+    const res = await fetch(`/api/contacts/${c.id}/enrich`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) })
+    if (res.ok) { fetchContacts(search); showToast(`${c.first_name} enriched!`, 'success') } else { const d = await res.json(); showToast(d.error || 'Enrichment failed', 'error') }
     setEnrichingId(null)
   }
   const enrichCompany = async (co) => {
@@ -415,7 +408,7 @@ export default function Home() {
   // ── Grouped nav sections ──────────────────────────────────────────────
   const sections = [
     { label: 'CRM',        keys: ['contacts', 'companies', 'pipeline'] },
-    { label: 'GTM',        keys: ['workflows', 'tam', 'icp'] },
+    { label: 'GTM',        keys: ['workflows', 'signals', 'tam', 'icp'] },
     { label: 'Tools',      keys: ['duplicates', 'integrations'] },
   ]
 
@@ -536,6 +529,7 @@ export default function Home() {
             {/* ── ROUTED VIEWS ──────────────────────────────────── */}
             {tab === 'pipeline'     && <Pipeline />}
             {tab === 'workflows'    && <Workflows />}
+            {tab === 'signals'      && <SignalFeed showToast={showToast} />}
             {tab === 'duplicates'   && <Duplicates onToast={(msg, type) => showToast(msg, type)} />}
             {tab === 'tam'          && <TAM />}
             {tab === 'integrations' && <IntegrationsPage showToast={showToast} />}
