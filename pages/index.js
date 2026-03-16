@@ -529,7 +529,27 @@ export default function Home() {
             {/* ── ROUTED VIEWS ──────────────────────────────────── */}
             {tab === 'pipeline'     && <Pipeline />}
             {tab === 'workflows'    && <Workflows />}
-            {tab === 'signals'      && <SignalFeed showToast={showToast} />}
+            {tab === 'signals' && (
+              <SignalFeed
+                showToast={showToast}
+                onViewCompany={a => {
+                  const co = companies.find(c => c.id === a.id || c.zi_company_id === a.zi_company_id)
+                  if (co) { setSelected(co); setModal('companyDetail') }
+                  else showToast('Company not found — try refreshing', 'error')
+                }}
+                onViewContacts={a => {
+                  const co = companies.find(c => c.id === a.id || c.zi_company_id === a.zi_company_id)
+                  if (co) { setSelected(co); setModal('companyDetail') }
+                  else { setTab('contacts'); setSearch(a.name) }
+                }}
+                onZiSearch={a => { setModal('ziSearch') }}
+                onAddDeal={a => {
+                  const co = companies.find(c => c.id === a.id || c.zi_company_id === a.zi_company_id)
+                  if (co) setSelected(co)
+                  setModal('addDeal')
+                }}
+              />
+            )}
             {tab === 'duplicates'   && <Duplicates onToast={(msg, type) => showToast(msg, type)} />}
             {tab === 'tam'          && <TAM />}
             {tab === 'integrations' && <IntegrationsPage showToast={showToast} />}
