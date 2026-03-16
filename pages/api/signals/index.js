@@ -129,6 +129,8 @@ export default async function handler(req, res) {
   if (!topics.length) return res.status(400).json({ error: 'At least one intent topic required' })
 
   try {
+    const CACHE_MAX_AGE_HOURS = 24  // serve cache if fresher than this
+
     // Fetch companies based on mode
     let companiesQuery = supabase
       .from('companies')
@@ -203,23 +205,81 @@ export default async function handler(req, res) {
 
     const headers = ziHeaders(token)
 
-    // Fetch signals per company — only for companies with zi_company_id
-    // Run in parallel but limit to avoid rate limits
+    // Check signal_cache first — serve cached data if fresh enough
+    const { data: cachedSignals } = await supabase
+      .from('signal_cache')
+      .select('*')
+      .in('company_id', companyIds)
+
+    const cacheMap = {}
+    for (const c of (cachedSignals || [])) {
+      cacheMap[c.company_id] = c
+    }
+
+    const cutoff = new Date(Date.now() - CACHE_MAX_AGE_HOURS * 60 * 60 * 1000).toISOString()
+
+    // For each company: use cache if fresh, otherwise hit ZI API
     const enrichedCompanies = await Promise.all(
       companies.map(async co => {
         const ziId = co.zi_company_id
-        if (!ziId) return { co, intent: null, news: null, scoop: null }
+        if (!ziId) return { co, intent: null, news: null, scoop: null, fromCache: false }
+
+        const cached = cacheMap[co.id]
+        if (cached && cached.cached_at > cutoff) {
+          // Serve from cache
+          return {
+            co,
+            fromCache: true,
+            cachedAt: cached.cached_at,
+            intent: cached.intent_score > 0 ? {
+              score: cached.intent_score,
+              topics: cached.intent_topics || [],
+              signalDate: cached.intent_date,
+            } : null,
+            news: cached.news_headline ? {
+              headline: cached.news_headline,
+              date: cached.news_date,
+            } : null,
+            scoop: cached.scoop_title ? {
+              title: cached.scoop_title,
+              type: cached.scoop_type,
+              date: cached.scoop_date,
+            } : null,
+          }
+        }
+
+        // Cache miss or stale — hit ZI API
         const [intent, news, scoop] = await Promise.all([
           enrichIntent(ziId, topics, headers),
           enrichNews(ziId, headers),
           enrichScoops(ziId, headers),
         ])
-        return { co, intent, news, scoop }
+
+        // Write to cache for next time
+        if (intent !== null || news !== null || scoop !== null) {
+          const strength = (intent?.score||0) >= 70 ? 'high' : (intent?.score||0) >= 40 ? 'med' : (intent?.score||0) >= 20 ? 'low' : (news||scoop) ? 'low' : 'none'
+          await supabase.from('signal_cache').upsert({
+            company_id:    co.id,
+            zi_company_id: ziId,
+            intent_score:  intent?.score || 0,
+            intent_topics: Array.isArray(intent?.topics) ? intent.topics : [],
+            intent_date:   intent?.signalDate || null,
+            news_headline: news?.headline || null,
+            news_date:     news?.date || null,
+            scoop_title:   scoop?.title || null,
+            scoop_type:    scoop?.type || null,
+            scoop_date:    scoop?.date || null,
+            strength,
+            cached_at:     new Date().toISOString(),
+          }, { onConflict: 'company_id' })
+        }
+
+        return { co, intent, news, scoop, fromCache: false }
       })
     )
 
     // Build account objects
-    const accounts = enrichedCompanies.map(({ co, intent, news, scoop }) => {
+    const accounts = enrichedCompanies.map(({ co, intent, news, scoop, fromCache, cachedAt }) => {
       const deals = dealMap[co.id] || []
       const openDeal = deals.find(d => !['closed_won','closed_lost'].includes(d.stage))
       const wonDeal  = deals.find(d => d.stage === 'closed_won')
@@ -270,6 +330,8 @@ export default async function handler(req, res) {
       return {
         id: co.id,
         name: co.name,
+        fromCache: fromCache || false,
+        cachedAt: cachedAt || null,
         meta: [co.industry, co.employees ? co.employees+' emp' : null, co.city].filter(Boolean).join(' · '),
         zi_company_id: co.zi_company_id || '',
         score: intent?.score || 0,
