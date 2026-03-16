@@ -118,12 +118,18 @@ const WORKFLOW_TEMPLATES = [
       'Auto-cached results — Signal Feed loads instantly from cache',
     ],
     defaults: {
-      mode: 'both',
+      mode: 'all — every company in CRM',
+      topics: '',
       schedule: 'daily',
     },
     configFields: [
-      { key: 'mode',     label: 'Which accounts to sync', type: 'select', options: ['prospect — all accounts', 'grow — won deals only', 'both — all accounts'] },
-      { key: 'schedule', label: 'Run schedule',           type: 'select', options: ['manual','daily','weekly'] },
+      { key: 'mode',            label: 'Which accounts to sync',         type: 'select', options: ['all — every company in CRM', 'prospect — no active deal', 'pipeline — open deals only', 'grow — closed-won accounts'] },
+      { key: 'topics',          label: 'Intent topics (comma separated)', type: 'text',   hint: 'e.g. CRM software, Sales automation, Lead generation' },
+      { key: 'industry_filter', label: 'Filter by industry (optional)',   type: 'text',   hint: 'e.g. Software, Fintech — leave blank for all' },
+      { key: 'employee_min',    label: 'Min company size (employees)',    type: 'number', hint: 'Leave blank for no minimum' },
+      { key: 'employee_max',    label: 'Max company size (employees)',    type: 'number', hint: 'Leave blank for no maximum' },
+      { key: 'country_filter',  label: 'Filter by country (optional)',    type: 'text',   hint: 'e.g. United States — leave blank for all' },
+      { key: 'schedule',        label: 'Run schedule',                   type: 'select', options: ['manual', 'daily', 'weekly'] },
     ],
   },
   {
