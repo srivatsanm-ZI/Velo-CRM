@@ -126,7 +126,7 @@ export default async function handler(req, res) {
 
   if (!token) return res.status(400).json({ error: 'ZoomInfo token required' })
   if (!mode)  return res.status(400).json({ error: 'mode required: prospect or grow' })
-  if (!topics.length) return res.status(400).json({ error: 'At least one intent topic required' })
+  // topics only required for live ZI API calls — not needed if reading from cache
 
   try {
     const CACHE_MAX_AGE_HOURS = 24  // serve cache if fresher than this
@@ -248,7 +248,11 @@ export default async function handler(req, res) {
           }
         }
 
-        // Cache miss or stale — hit ZI API
+        // Cache miss or stale — hit ZI API only if topics provided
+        if (!topics.length) {
+          // No topics configured — return empty signals, show what we have from cache
+          return { co, intent: null, news: null, scoop: null, fromCache: false }
+        }
         const [intent, news, scoop] = await Promise.all([
           enrichIntent(ziId, topics, headers),
           enrichNews(ziId, headers),
