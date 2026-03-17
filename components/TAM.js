@@ -6,7 +6,7 @@ const SENIORITIES = ['C-Level', 'VP', 'Director', 'Manager', 'Individual Contrib
 const COUNTRIES = ['United States', 'United Kingdom', 'Canada', 'Australia', 'Germany', 'France', 'India', 'Singapore']
 const EMP_RANGES = [{ label: '1-50', min: 1, max: 50 }, { label: '51-200', min: 51, max: 200 }, { label: '201-500', min: 201, max: 500 }, { label: '501-1000', min: 501, max: 1000 }, { label: '1001-5000', min: 1001, max: 5000 }, { label: '5000+', min: 5000, max: 999999 }]
 
-const EMPTY = { name: '', industries: [], countries: [], seniority_levels: [], job_titles: [], employee_min: null, employee_max: null, notes: '' }
+const EMPTY = { name: '', industries: [], countries: [], seniority_levels: [], job_titles: [], employee_min: null, employee_max: null, notes: '', intent_topics: '' }
 
 function Tag({ label, onRemove }) {
   return (
@@ -257,6 +257,15 @@ export default function TAM() {
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* Intent Topics */}
+          <div>
+            <label className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2 block">Intent Topics</label>
+            <input value={form.intent_topics || ''} onChange={e => setForm(s => ({ ...s, intent_topics: e.target.value }))}
+              placeholder="e.g. CRM software, Sales automation, Lead generation"
+              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-300" />
+            <p className="text-xs text-slate-400 mt-1.5">Comma-separated. When you search companies with this profile, ZoomInfo intent signals will appear for each result.</p>
           </div>
 
           {/* Notes */}
