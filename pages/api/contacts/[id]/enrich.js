@@ -10,132 +10,113 @@ export default async function handler(req, res) {
   const { token } = req.body
 
   if (!token) {
-    return res.status(400).json({ error: 'ZoomInfo token is required.' })
+    return res.status(400).json({ error: 'ZoomInfo token is required. Please paste your token in the CRM.' })
   }
 
-  const { data: contact, error: fetchErr } = await supabase
-    .from('contacts')
+  const { data: company, error: fetchErr } = await supabase
+    .from('companies')
     .select('*')
     .eq('id', id)
     .single()
 
-  if (fetchErr || !contact) {
-    return res.status(404).json({ error: 'Contact not found' })
-  }
-
-  // Build match input — email first, then name (personId excluded as ZI rejects it)
-  let matchInput = null
-  if (contact.email) {
-    matchInput = { emailAddress: contact.email }
-  } else if (contact.first_name && contact.last_name && contact.company_name) {
-    matchInput = { firstName: contact.first_name, lastName: contact.last_name, companyName: contact.company_name }
-  } else if (contact.first_name && contact.last_name) {
-    matchInput = { firstName: contact.first_name, lastName: contact.last_name }
-  } else {
-    return res.status(422).json({ error: 'Contact needs an email or full name to enrich.' })
+  if (fetchErr || !company) {
+    return res.status(404).json({ error: 'Company not found' })
   }
 
   try {
-    const cleanToken = token.replace(/^Bearer\s+/i, '').trim()
+    const matchInput = {}
+    if (company.website) matchInput.companyWebsite = company.website
+    else matchInput.companyName = company.name
 
-    const ziRes = await fetch('https://api.zoominfo.com/gtm/data/v1/contacts/enrich', {
+    const requestBody = {
+      data: {
+        type: 'CompanyEnrich',
+        attributes: {
+          matchCompanyInput: [matchInput],
+          requiredFields: ['id'],
+          outputFields: [
+            'id', 'name', 'website', 'industry', 'employeeCount', 'revenue',
+            'city', 'state', 'country', 'phone', 'description',
+            'foundedYear', 'ticker',
+          ],
+        },
+      },
+    }
+
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 9000)
+
+    const ziRes = await fetch('https://api.zoominfo.com/gtm/data/v1/companies/enrich', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/vnd.api+json',
         'Accept': 'application/vnd.api+json',
-        'Authorization': `Bearer ${cleanToken}`,
+        'Authorization': `Bearer ${token}`,
       },
-      body: JSON.stringify({
-        data: {
-          type: 'ContactEnrich',
-          attributes: {
-            matchPersonInput: [matchInput],
-            requiredFields: ['id'],
-            outputFields: [
-              'id', 'firstName', 'lastName', 'email', 'phone', 'mobilePhone',
-              'jobTitle', 'managementLevel', 'companyName', 'companyId',
-              'city', 'state', 'country',
-            ],
-          },
-        },
-      }),
+      body: JSON.stringify(requestBody),
+      signal: controller.signal,
     })
-
-    const rawText = await ziRes.text()
-    console.log('[ZI Contact Enrich] status:', ziRes.status)
-    console.log('[ZI Contact Enrich] matchInput:', JSON.stringify(matchInput))
-    console.log('[ZI Contact Enrich] response:', rawText.slice(0, 1000))
+    clearTimeout(timeout)
 
     if (!ziRes.ok) {
-      return res.status(ziRes.status).json({ error: `ZoomInfo error ${ziRes.status}: ${rawText}` })
+      const err = await ziRes.text()
+      throw new Error(`ZoomInfo API error ${ziRes.status}: ${err}`)
     }
 
-    const ziData = JSON.parse(rawText)
+    const ziData = await ziRes.json()
 
-    // Try GTM v1 format first: { data: [ { id, attributes: {}, meta: { matchStatus } } ] }
-    let r = null
-    let ziId = null
+    // Response shape: { company_1: { success, data: { id, name, ... } } }
+    const companyKey = Object.keys(ziData).find(k => k.startsWith('company_'))
+    const result = companyKey ? ziData[companyKey]?.data : null
 
-    const v1Item = ziData?.data?.[0]
-    if (v1Item?.attributes && v1Item?.meta?.matchStatus !== 'NO_MATCH') {
-      r = v1Item.attributes
-      ziId = v1Item.id
-    }
-
-    // Fall back to legacy format: { contact_1: { success, data: { id, ... } } }
-    if (!r) {
-      const legacyKey = Object.keys(ziData).find(k => k.startsWith('contact_'))
-      const entry = legacyKey ? ziData[legacyKey] : null
-      if (entry?.success && entry?.data?.id) {
-        r = entry.data
-        ziId = r.id
-      }
-    }
-
-    if (!r) {
-      return res.status(422).json({
-        error: 'No match found in ZoomInfo.',
-        debug: JSON.stringify(ziData).slice(0, 300),
-      })
+    if (!result || !result.id) {
+      return res.status(422).json({ error: 'ZoomInfo found no match for this company' })
     }
 
     const updates = {
-      enriched:    true,
-      enriched_at: new Date().toISOString(),
-      updated_at:  new Date().toISOString(),
+      zi_company_id: String(result.id)                           || company.zi_company_id,
+      name:          result.name                                 || company.name,
+      website:       result.website || result.domain             || company.website,
+      industry:      result.industry                             || company.industry,
+      employees:     result.employeeCount ? String(result.employeeCount) : company.employees,
+      revenue:       result.revenue      ? String(result.revenue)       : company.revenue,
+      city:          result.city                                 || company.city,
+      state:         result.state                                || company.state,
+      country:       result.country                              || company.country,
+      phone:         result.phone                                || company.phone,
+      description:   result.description                          || company.description,
+      founded:       result.foundedYear  ? String(result.foundedYear)   : company.founded,
+      ticker:        result.ticker                               || company.ticker,
+      enriched:      true,
+      enriched_at:   new Date().toISOString(),
+      updated_at:    new Date().toISOString(),
     }
 
-    if (ziId)              updates.zi_contact_id    = String(ziId)
-    if (ziId)              updates.zi_person_id     = String(ziId)
-    if (r.firstName)       updates.first_name       = r.firstName
-    if (r.lastName)        updates.last_name        = r.lastName
-    if (r.email)           updates.email            = r.email
-    if (r.jobTitle)        updates.job_title        = r.jobTitle
-    if (r.phone)           updates.phone            = r.phone
-    if (r.mobilePhone)     updates.mobile_phone     = r.mobilePhone
-    if (r.city)            updates.city             = r.city
-    if (r.state)           updates.state            = r.state
-    if (r.country)         updates.country          = r.country
-    updates.company_name = r.companyName || r.company?.name || r.employmentHistory?.[0]?.company?.companyName || null
-    if (updates.company_name === null) delete updates.company_name
-    if (r.companyId)       updates.zi_company_id    = String(r.companyId)
-    // company name handled above
-    if (!r.companyId && r.employmentHistory?.[0]?.company?.companyId)
-      updates.zi_company_id = String(r.employmentHistory[0].company.companyId)
-    if (r.managementLevel) updates.management_level = Array.isArray(r.managementLevel)
-                             ? r.managementLevel[0] : r.managementLevel
-
     const { data: updated, error: updateErr } = await supabase
-      .from('contacts')
+      .from('companies')
       .update(updates)
       .eq('id', id)
       .select()
       .single()
 
     if (updateErr) return res.status(500).json({ error: updateErr.message })
+
+    // If company_name is still blank but company_id is set, backfill from companies table
+    if (!updated.company_name && updated.company_id) {
+      const { data: co } = await supabase
+        .from('companies').select('name').eq('id', updated.company_id).single()
+      if (co?.name) {
+        await supabase.from('contacts').update({ company_name: co.name }).eq('id', id)
+        updated.company_name = co.name
+      }
+    }
+
     return res.status(200).json(updated)
 
   } catch (err) {
+    if (err.name === 'AbortError') {
+      return res.status(504).json({ error: 'ZoomInfo request timed out. Please try again.' })
+    }
     return res.status(500).json({ error: err.message })
   }
 }
