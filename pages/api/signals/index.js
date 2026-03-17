@@ -1,37 +1,367 @@
 import { supabase } from '../../../lib/supabase'
 
-// Simple endpoint to write a single company signal to cache
-// Used when adding a company from ICP Search
+const ZI = 'https://api.zoominfo.com/gtm/data/v1'
+
+function ziHeaders(token) {
+  return {
+    'Content-Type': 'application/vnd.api+json',
+    'Accept': 'application/vnd.api+json',
+    'Authorization': `Bearer ${token.replace(/^Bearer\s+/i, '').trim()}`,
+  }
+}
+
+// Enrich intent for ONE company using the correct endpoint
+// POST /gtm/data/v1/intent/enrich — requires companyId + topics
+async function enrichIntent(ziId, topics, headers) {
+  try {
+    const res = await fetch(`${ZI}/intent/enrich`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        data: {
+          type: 'IntentEnrich',
+          attributes: {
+            companyId: String(ziId),
+            topics: topics.slice(0, 10),
+          },
+        },
+      }),
+    })
+    const rawText = await res.text()
+    console.log(`[Intent Enrich] companyId=${ziId} status=${res.status} response=${rawText.slice(0,300)}`)
+    if (!res.ok) return null
+    const data = JSON.parse(rawText)
+    // Response: { data: [ { id, type, attributes: { score, topics, signalDate, ... } } ] }
+    const item = data?.data?.[0]
+    if (!item) return null
+    return {
+      score: item.attributes?.score || item.attributes?.signalScore || 0,
+      topics: item.attributes?.topics || item.attributes?.intentTopics || [],
+      signalDate: item.attributes?.signalDate || item.attributes?.date || null,
+    }
+  } catch (e) {
+    console.error(`[Intent Enrich] error for ${ziId}:`, e.message)
+    return null
+  }
+}
+
+// Enrich news for ONE company
+// POST /gtm/data/v1/news/enrich
+async function enrichNews(ziId, headers) {
+  try {
+    const res = await fetch(`${ZI}/news/enrich`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        data: {
+          type: 'NewsEnrich',
+          attributes: { companyId: String(ziId) },
+        },
+      }),
+    })
+    const rawText = await res.text()
+    console.log(`[News Enrich] companyId=${ziId} status=${res.status} response=${rawText.slice(0,300)}`)
+    if (!res.ok) return null
+    const data = JSON.parse(rawText)
+    const item = data?.data?.[0]
+    if (!item?.attributes) return null
+    return {
+      headline: item.attributes?.title || item.attributes?.headline || '',
+      date: item.attributes?.publishedDate || item.attributes?.date || null,
+      url: item.attributes?.url || null,
+    }
+  } catch { return null }
+}
+
+// Enrich scoops for ONE company
+// POST /gtm/data/v1/scoops/enrich
+async function enrichScoops(ziId, headers) {
+  try {
+    const res = await fetch(`${ZI}/scoops/enrich`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        data: {
+          type: 'ScoopEnrich',
+          attributes: { companyId: String(ziId) },
+        },
+      }),
+    })
+    const rawText = await res.text()
+    console.log(`[Scoops Enrich] companyId=${ziId} status=${res.status} response=${rawText.slice(0,300)}`)
+    if (!res.ok) return null
+    const data = JSON.parse(rawText)
+    const item = data?.data?.[0]
+    if (!item?.attributes) return null
+    return {
+      title: item.attributes?.scoopTitle || item.attributes?.title || '',
+      type: item.attributes?.scoopType || '',
+      date: item.attributes?.publishedDate || item.attributes?.date || null,
+    }
+  } catch { return null }
+}
+
+function daysSince(dateStr) {
+  if (!dateStr) return null
+  const d = new Date(dateStr)
+  if (isNaN(d)) return null
+  return Math.floor((Date.now() - d.getTime()) / (1000 * 60 * 60 * 24))
+}
+
+function signalStrength(intentScore, hasNews, hasScoop) {
+  const score = intentScore || 0
+  if (score >= 70 || (score >= 50 && (hasNews || hasScoop))) return 'high'
+  if (score >= 40 || ((hasNews || hasScoop) && score >= 20)) return 'med'
+  if (score >= 20 || hasNews || hasScoop) return 'low'
+  return 'none'
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', ['POST'])
     return res.status(405).end()
   }
 
-  const { zi_company_id, company_name, intent_score, intent_topics, strength } = req.body
-  if (!zi_company_id) return res.status(400).json({ error: 'zi_company_id required' })
+  const { token, mode, topics = [] } = req.body
+
+  if (!token) return res.status(400).json({ error: 'ZoomInfo token required' })
+  if (!mode)  return res.status(400).json({ error: 'mode required: prospect or grow' })
+  // topics only required for live ZI API calls — not needed if reading from cache
 
   try {
-    // Find company_id from companies table
-    const { data: co } = await supabase
+    const CACHE_MAX_AGE_HOURS = 24  // serve cache if fresher than this
+
+    // Fetch companies based on mode
+    let companiesQuery = supabase
       .from('companies')
-      .select('id')
-      .eq('zi_company_id', String(zi_company_id))
-      .maybeSingle()
+      .select('id, name, industry, employees, city, country, zi_company_id, type, created_at, updated_at')
 
-    if (!co?.id) return res.status(200).json({ skipped: true })
+    if (mode === 'grow') {
+      const { data: wonDeals } = await supabase
+        .from('deals')
+        .select('company_id')
+        .eq('stage', 'closed_won')
+        .not('company_id', 'is', null)
+      const wonIds = [...new Set((wonDeals || []).map(d => d.company_id))]
+      if (!wonIds.length) return res.status(200).json({ accounts: [] })
+      companiesQuery = companiesQuery.in('id', wonIds)
+    } else {
+      companiesQuery = companiesQuery.order('created_at', { ascending: false }).limit(25)
+    }
 
-    await supabase.from('signal_cache').upsert({
-      company_id:    co.id,
-      zi_company_id: String(zi_company_id),
-      intent_score:  intent_score || 0,
-      intent_topics: intent_topics || [],
-      strength:      strength || 'none',
-      cached_at:     new Date().toISOString(),
-    }, { onConflict: 'company_id' })
+    const { data: companies, error: coErr } = await companiesQuery
+    if (coErr) return res.status(500).json({ error: coErr.message })
+    if (!companies?.length) return res.status(200).json({ accounts: [] })
 
-    return res.status(200).json({ success: true })
+    // Get deal history
+    const companyIds = companies.map(c => c.id)
+    const { data: allDeals } = await supabase
+      .from('deals')
+      .select('company_id, stage, value, created_at, title')
+      .in('company_id', companyIds)
+      .order('created_at', { ascending: false })
+
+    // Genuine outbound touches only:
+    // 1. Emails sent via CRM (direction = sent)
+    // 2. Calls logged by rep (type = call)
+    // 3. Meetings logged by rep (type = meeting)
+    // Excluded: notes (internal), enrichment, deal updates, imports
+
+    const { data: sentEmails } = await supabase
+      .from('emails')
+      .select('company_id, received_at, created_at')
+      .in('company_id', companyIds)
+      .eq('direction', 'sent')
+      .order('received_at', { ascending: false })
+
+    const { data: callMeetings } = await supabase
+      .from('activities')
+      .select('company_id, type, logged_at, created_at')
+      .in('company_id', companyIds)
+      .in('type', ['call', 'meeting'])
+      .order('logged_at', { ascending: false })
+
+    const dealMap = {}
+    const activityMap = {}
+
+    for (const d of (allDeals || [])) {
+      if (!dealMap[d.company_id]) dealMap[d.company_id] = []
+      dealMap[d.company_id].push(d)
+    }
+
+    // Most recent genuine outbound touch per company
+    for (const e of (sentEmails || [])) {
+      const date = e.received_at || e.created_at
+      if (!activityMap[e.company_id] || date > activityMap[e.company_id]) {
+        activityMap[e.company_id] = date
+      }
+    }
+    for (const a of (callMeetings || [])) {
+      const date = a.logged_at || a.created_at
+      if (!activityMap[a.company_id] || date > activityMap[a.company_id]) {
+        activityMap[a.company_id] = date
+      }
+    }
+
+    const headers = ziHeaders(token)
+
+    // Check signal_cache first — serve cached data if fresh enough
+    const { data: cachedSignals } = await supabase
+      .from('signal_cache')
+      .select('*')
+      .in('company_id', companyIds)
+
+    const cacheMap = {}
+    for (const c of (cachedSignals || [])) {
+      cacheMap[c.company_id] = c
+    }
+
+    const cutoff = new Date(Date.now() - CACHE_MAX_AGE_HOURS * 60 * 60 * 1000).toISOString()
+
+    // For each company: use cache if fresh, otherwise hit ZI API
+    const enrichedCompanies = await Promise.all(
+      companies.map(async co => {
+        const ziId = co.zi_company_id
+        if (!ziId) return { co, intent: null, news: null, scoop: null, fromCache: false }
+
+        const cached = cacheMap[co.id]
+        if (cached && cached.cached_at > cutoff) {
+          // Serve from cache
+          return {
+            co,
+            fromCache: true,
+            cachedAt: cached.cached_at,
+            intent: cached.intent_score > 0 ? {
+              score: cached.intent_score,
+              topics: cached.intent_topics || [],
+              signalDate: cached.intent_date,
+            } : null,
+            news: cached.news_headline ? {
+              headline: cached.news_headline,
+              date: cached.news_date,
+            } : null,
+            scoop: cached.scoop_title ? {
+              title: cached.scoop_title,
+              type: cached.scoop_type,
+              date: cached.scoop_date,
+            } : null,
+          }
+        }
+
+        // Cache miss or stale — hit ZI API only if topics provided
+        if (!topics.length) {
+          // No topics configured — return empty signals, show what we have from cache
+          return { co, intent: null, news: null, scoop: null, fromCache: false }
+        }
+        const [intent, news, scoop] = await Promise.all([
+          enrichIntent(ziId, topics, headers),
+          enrichNews(ziId, headers),
+          enrichScoops(ziId, headers),
+        ])
+
+        // Write to cache for next time
+        if (intent !== null || news !== null || scoop !== null) {
+          const strength = (intent?.score||0) >= 70 ? 'high' : (intent?.score||0) >= 40 ? 'med' : (intent?.score||0) >= 20 ? 'low' : (news||scoop) ? 'low' : 'none'
+          await supabase.from('signal_cache').upsert({
+            company_id:    co.id,
+            zi_company_id: ziId,
+            intent_score:  intent?.score || 0,
+            intent_topics: Array.isArray(intent?.topics) ? intent.topics : [],
+            intent_date:   intent?.signalDate || null,
+            news_headline: news?.headline || null,
+            news_date:     news?.date || null,
+            scoop_title:   scoop?.title || null,
+            scoop_type:    scoop?.type || null,
+            scoop_date:    scoop?.date || null,
+            strength,
+            cached_at:     new Date().toISOString(),
+          }, { onConflict: 'company_id' })
+        }
+
+        return { co, intent, news, scoop, fromCache: false }
+      })
+    )
+
+    // Build account objects
+    const accounts = enrichedCompanies.map(({ co, intent, news, scoop, fromCache, cachedAt }) => {
+      const deals = dealMap[co.id] || []
+      const openDeal = deals.find(d => !['closed_won','closed_lost'].includes(d.stage))
+      const wonDeal  = deals.find(d => d.stage === 'closed_won')
+      const lostDeal = deals.find(d => d.stage === 'closed_lost')
+
+      // Only use genuine human touch — no fallback to updated_at (enrichment updates that)
+      const lastTouch = activityMap[co.id] || null
+      const lastTouchDays = lastTouch ? (daysSince(lastTouch) || 0) : null
+
+      // Signal age
+      const signalDates = [intent?.signalDate, news?.date, scoop?.date]
+        .filter(Boolean).map(d => daysSince(d)).filter(v => v !== null)
+      const sigAge = signalDates.length ? Math.min(...signalDates) : null
+
+      // Signal tags
+      const sigs = []
+      const sigLabels = []
+      if (intent?.score >= 10) {
+        sigs.push('intent')
+        const topTopic = Array.isArray(intent.topics) ? intent.topics[0] : intent.topics
+        sigLabels.push(topTopic ? `${topTopic} intent` : `Intent score ${intent.score}`)
+      }
+      if (news?.headline) {
+        sigs.push('news')
+        sigLabels.push(news.headline.length > 45 ? news.headline.slice(0, 45) + '…' : news.headline)
+      }
+      if (scoop?.title) {
+        const isRisk = /left|depart|resign/i.test(scoop.title)
+        sigs.push(isRisk ? 'risk' : 'scoop')
+        sigLabels.push(scoop.title.length > 45 ? scoop.title.slice(0, 45) + '…' : scoop.title)
+      }
+
+      const strength = signalStrength(intent?.score, !!news, !!scoop)
+
+      let dealLabel = 'No active deal', dealColor = ''
+      if (openDeal)      { dealLabel = `Open $${openDeal.value >= 1000 ? Math.round(openDeal.value/1000)+'k' : openDeal.value||'—'}`; dealColor = '#059669' }
+      else if (wonDeal)  { dealLabel = `Won $${wonDeal.value  >= 1000 ? Math.round(wonDeal.value/1000)+'k'  : wonDeal.value||'—'}`;  dealColor = '#1d4ed8' }
+      else if (lostDeal) { dealLabel = `Lost $${lostDeal.value >= 1000 ? Math.round(lostDeal.value/1000)+'k' : lostDeal.value||'—'}`; dealColor = '#dc2626' }
+
+      function ltLabel(d) {
+        if (!d) return 'Never'
+        if (d < 7)   return `${d}d ago`
+        if (d < 30)  return `${Math.round(d/7)}w ago`
+        if (d < 365) return `${Math.round(d/30)}mo ago`
+        return `${Math.round(d/365)}y ago`
+      }
+
+      return {
+        id: co.id,
+        name: co.name,
+        fromCache: fromCache || false,
+        cachedAt: cachedAt || null,
+        meta: [co.industry, co.employees ? co.employees+' emp' : null, co.city].filter(Boolean).join(' · '),
+        zi_company_id: co.zi_company_id || '',
+        score: intent?.score || 0,
+        strength,
+        sigs,
+        sigLabels,
+        sigAge,
+        sigAgeLabel: sigAge !== null ? (sigAge === 0 ? 'Today' : sigAge === 1 ? 'Yesterday' : `${sigAge}d ago`) : '—',
+        lt: lastTouchDays ?? 9999,
+        ltLabel: lastTouch ? ltLabel(lastTouchDays) : 'Never',
+        deal: dealLabel,
+        dealColor,
+        intent: intent ? `Score ${intent.score} · ${Array.isArray(intent.topics) ? intent.topics.slice(0,2).join(', ') : intent.topics || '—'}` : '—',
+        news:  news  ? `${news.headline}${news.date ? ' · '+new Date(news.date).toLocaleDateString('en-US',{month:'short',year:'numeric'}) : ''}` : '—',
+        scoop: scoop ? `${scoop.title}${scoop.date ? ' · '+new Date(scoop.date).toLocaleDateString('en-US',{month:'short',year:'numeric'}) : ''}` : '—',
+      }
+    })
+
+    // Sort: high first, then by score
+    const order = { high:0, med:1, low:2, none:3 }
+    accounts.sort((a,b) => (order[a.strength]-order[b.strength]) || (b.score-a.score))
+
+    return res.status(200).json({ accounts })
+
   } catch (err) {
+    console.error('[Signals API]', err)
     return res.status(500).json({ error: err.message })
   }
 }
