@@ -22,13 +22,15 @@ export default async function handler(req, res) {
     if (error) return res.status(500).json({ error: error.message })
 
     // If company_name is blank but contact has a linked company, use the company name
-    const enriched = (data || []).map(c => ({
-      ...c,
-      company_name: c.company_name || c.companies?.name || null,
-      companies: undefined, // don't expose the join object
-    }))
+    const result = (data || []).map(c => {
+      const { companies: _co, ...rest } = c
+      return {
+        ...rest,
+        company_name: rest.company_name || _co?.name || null,
+      }
+    })
 
-    return res.status(200).json(enriched)
+    return res.status(200).json(result)
   }
 
   // ── POST ─────────────────────────────────────────────────────────────────
@@ -45,6 +47,8 @@ export default async function handler(req, res) {
     const safeLastName = last_name || ''
 
     // ── 1. Dedup check ────────────────────────────────────────────────────
+    // Skip dedup for manual entries — user explicitly wants to create
+    const isManual = source === 'manual' || (!zi_contact_id && !zi_person_id)
     let existing = null
 
     // Check by zi_contact_id (most reliable)
@@ -69,8 +73,8 @@ export default async function handler(req, res) {
       if (byZp) existing = byZp
     }
 
-    // Check by email (strong dedup signal)
-    if (!existing && email) {
+    // Check by email — only for ZI imports, not manual adds
+    if (!existing && !isManual && email) {
       const { data: byEmail } = await supabase
         .from('contacts')
         .select('*')
@@ -80,8 +84,8 @@ export default async function handler(req, res) {
       if (byEmail) existing = byEmail
     }
 
-    // Check by name + company (fuzzy dedup)
-    if (!existing && first_name && safeLastName && (company_name || company_id)) {
+    // Check by name + company — only for ZI imports, not manual adds
+    if (!existing && !isManual && first_name && safeLastName && (company_name || company_id)) {
       let nameQuery = supabase
         .from('contacts')
         .select('*')
