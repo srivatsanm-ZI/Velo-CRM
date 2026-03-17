@@ -20,6 +20,7 @@ export default function ICPSearch({ onImportContact, onImportCompany }) {
   const [error, setError] = useState('')
   const [imported, setImported] = useState(new Set())
   const [total, setTotal] = useState(0)
+  const [intentScores, setIntentScores] = useState({}) // ziCompanyId -> { score, topics }
   const [customFilters, setCustomFilters] = useState({
     jobTitle: '', companyName: '', country: '', employeeRangeMin: '', employeeRangeMax: '',
   })
@@ -35,6 +36,40 @@ export default function ICPSearch({ onImportContact, onImportCompany }) {
       })
       .catch(() => setLoadingProfiles(false))
   }, [])
+
+  async function fetchIntentForResults(ziIds, topics, token) {
+    const scores = {}
+    await Promise.all(ziIds.slice(0, 10).map(async ziId => {
+      try {
+        const cleanToken = token.replace(/^Bearer\s+/i, '').trim()
+        const res = await fetch('https://api.zoominfo.com/gtm/data/v1/intent/enrich', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/vnd.api+json',
+            'Accept': 'application/vnd.api+json',
+            'Authorization': `Bearer ${cleanToken}`,
+          },
+          body: JSON.stringify({
+            data: {
+              type: 'IntentEnrich',
+              attributes: { companyId: String(ziId), topics },
+            },
+          }),
+        })
+        if (res.ok) {
+          const data = await res.json()
+          const item = data?.data?.[0]
+          if (item?.attributes?.score > 0) {
+            scores[String(ziId)] = {
+              score: item.attributes.score,
+              topics: Array.isArray(item.attributes.topics) ? item.attributes.topics.slice(0, 2) : [],
+            }
+          }
+        }
+      } catch {}
+    }))
+    setIntentScores(scores)
+  }
 
   async function search() {
     if (!selectedProfile) { setError('Please select an ICP profile first.'); return }
@@ -91,7 +126,17 @@ export default function ICPSearch({ onImportContact, onImportCompany }) {
       })
       const data = await res.json()
       if (!res.ok) { setError(data.error || 'Search failed'); setLoading(false); return }
-      setResults(data.results || [])
+      const newResults = data.results || []
+      setResults(newResults)
+
+      // Fetch intent signals for company results if profile has topics
+      if (searchType === 'companies' && selectedProfile?.intent_topics) {
+        const topics = selectedProfile.intent_topics.split(',').map(t => t.trim()).filter(Boolean)
+        const ziIds = newResults.map(r => r.zoominfoCompanyId).filter(Boolean)
+        if (topics.length && ziIds.length) {
+          fetchIntentForResults(ziIds, topics, token)
+        }
+      }
       setTotal(data.total || 0)
       setImported(new Set())
     } catch (e) { setError(e.message) }
@@ -100,8 +145,31 @@ export default function ICPSearch({ onImportContact, onImportCompany }) {
 
   async function handleImport(item) {
     const key = item.zoominfoContactId || item.zoominfoCompanyId
-    if (searchType === 'contacts') await onImportContact(item)
-    else await onImportCompany(item)
+    if (searchType === 'contacts') {
+      await onImportContact(item)
+    } else {
+      await onImportCompany(item)
+      // Save intent signal to cache if available
+      const ziId = String(item.zoominfoCompanyId || '')
+      const sig = intentScores[ziId]
+      if (sig && ziId) {
+        try {
+          const token = localStorage.getItem('zi_token')
+          await fetch('/api/signals/cache', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              token,
+              zi_company_id: ziId,
+              company_name: item.name,
+              intent_score: sig.score,
+              intent_topics: sig.topics,
+              strength: sig.score >= 70 ? 'high' : sig.score >= 40 ? 'med' : 'low',
+            }),
+          })
+        } catch {}
+      }
+    }
     setImported(prev => new Set([...prev, key]))
   }
 
@@ -240,11 +308,25 @@ export default function ICPSearch({ onImportContact, onImportCompany }) {
                           </>
                         ) : (
                           <>
-                            <div className="text-sm font-bold text-slate-800">{item.name}</div>
+                            <div className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                              {item.name}
+                              {intentScores[String(item.zoominfoCompanyId)]?.score > 0 && (
+                                <span className="text-xs font-bold px-2 py-0.5 rounded-full"
+                                  style={{
+                                    background: intentScores[String(item.zoominfoCompanyId)].score >= 70 ? '#fef2f2' : intentScores[String(item.zoominfoCompanyId)].score >= 40 ? '#fffbeb' : '#f0fdf4',
+                                    color: intentScores[String(item.zoominfoCompanyId)].score >= 70 ? '#991b1b' : intentScores[String(item.zoominfoCompanyId)].score >= 40 ? '#92400e' : '#166534',
+                                  }}>
+                                  ⚡ Intent {intentScores[String(item.zoominfoCompanyId)].score}
+                                </span>
+                              )}
+                            </div>
                             <div className="text-xs text-slate-500">{item.industry || '—'}{item.country ? ` · ${item.country}` : ''}</div>
                             <div className="flex items-center gap-3 mt-0.5">
                               {item.website && <span className="text-xs text-slate-400">🌐 {item.website}</span>}
                               {item.employeeCount && <span className="text-xs text-slate-400">👥 {Number(item.employeeCount).toLocaleString()} employees</span>}
+                              {intentScores[String(item.zoominfoCompanyId)]?.topics?.length > 0 && (
+                                <span className="text-xs text-indigo-500 font-medium">{intentScores[String(item.zoominfoCompanyId)].topics.join(', ')}</span>
+                              )}
                             </div>
                           </>
                         )}
