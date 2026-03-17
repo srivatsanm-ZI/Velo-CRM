@@ -10,7 +10,6 @@ import Pipeline from '../components/Pipeline'
 import TAM from '../components/TAM'
 import ICPSearch from '../components/ICPSearch'
 import Workflows from '../components/Workflows'
-import SignalFeed from '../components/SignalFeed'
 import Duplicates from '../components/Duplicates'
 
 function fmtDate(iso) {
@@ -43,7 +42,6 @@ const NAV = [
   { key: 'companies',    label: 'Companies',     icon: <BuildingIcon />,   section: 'crm' },
   { key: 'pipeline',     label: 'Pipeline',      icon: <PipelineIcon />,   section: 'crm' },
   { key: 'workflows',    label: 'Workflows',     icon: <WorkflowIcon />,   section: 'gtm' },
-  { key: 'signals',      label: 'Signal Feed',   icon: <BoltIcon />,       section: 'gtm' },
   { key: 'tam',          label: 'ICP Profiles',  icon: <TargetIcon />,     section: 'gtm' },
   { key: 'icp',          label: 'ICP Search',    icon: <SearchNavIcon />,  section: 'gtm' },
   { key: 'duplicates',   label: 'Duplicates',    icon: <DuplicatesIcon />, section: 'tools' },
@@ -350,7 +348,7 @@ export default function Home() {
     }, 300)
   }, [search, tab, fetchContacts, fetchCompanies])
 
-  const createContact  = async (body) => { await fetch('/api/contacts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); fetchContacts(search); setModal(null); showToast('Contact created', 'success') }
+  const createContact  = async (body) => { await fetch('/api/contacts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, source: 'manual' }) }); fetchContacts(search); setModal(null); showToast('Contact created', 'success') }
   const updateContact  = async (body) => { await fetch(`/api/contacts/${selected.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); fetchContacts(search); setModal(null); showToast('Contact updated', 'success') }
   const deleteContact  = async (id) => { if (!confirm('Delete this contact?')) return; await fetch(`/api/contacts/${id}`, { method: 'DELETE' }); fetchContacts(search); showToast('Contact deleted', 'info') }
   const createCompany  = async (body) => { await fetch('/api/companies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); fetchCompanies(search); setModal(null); showToast('Company created', 'success') }
@@ -408,7 +406,7 @@ export default function Home() {
   // ── Grouped nav sections ──────────────────────────────────────────────
   const sections = [
     { label: 'CRM',        keys: ['contacts', 'companies', 'pipeline'] },
-    { label: 'GTM',        keys: ['workflows', 'signals', 'tam', 'icp'] },
+    { label: 'GTM',        keys: ['workflows', 'tam', 'icp'] },
     { label: 'Tools',      keys: ['duplicates', 'integrations'] },
   ]
 
@@ -529,27 +527,6 @@ export default function Home() {
             {/* ── ROUTED VIEWS ──────────────────────────────────── */}
             {tab === 'pipeline'     && <Pipeline />}
             {tab === 'workflows'    && <Workflows />}
-            {tab === 'signals' && (
-              <SignalFeed
-                showToast={showToast}
-                onViewCompany={a => {
-                  const co = companies.find(c => c.id === a.id || c.zi_company_id === a.zi_company_id)
-                  if (co) { setSelected(co); setModal('companyDetail') }
-                  else showToast('Company not found — try refreshing', 'error')
-                }}
-                onViewContacts={a => {
-                  const co = companies.find(c => c.id === a.id || c.zi_company_id === a.zi_company_id)
-                  if (co) { setSelected(co); setModal('companyDetail') }
-                  else { setTab('contacts'); setSearch(a.name) }
-                }}
-                onZiSearch={a => { setModal('ziSearch') }}
-                onAddDeal={a => {
-                  const co = companies.find(c => c.id === a.id || c.zi_company_id === a.zi_company_id)
-                  if (co) setSelected(co)
-                  setModal('addDeal')
-                }}
-              />
-            )}
             {tab === 'duplicates'   && <Duplicates onToast={(msg, type) => showToast(msg, type)} />}
             {tab === 'tam'          && <TAM />}
             {tab === 'integrations' && <IntegrationsPage showToast={showToast} />}
